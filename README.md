@@ -1,11 +1,8 @@
+<div style="text-align: center;">
+  <img src="logo.svg" alt="isolated" width="200"/>
+</div>
 
 <video src="https://github.com/user-attachments/assets/3f611c8f-c823-4692-b400-458937cfa640" controls preload></video>
-
-
-
-
-
-<img src="logo.svg" alt="isolated" width="200"/>
 
 ## Overview
 
