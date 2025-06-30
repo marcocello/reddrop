@@ -1,7 +1,4 @@
-# 💧 Reddrop
-
-**Make every comment count. Drop into Reddit’s most relevant discussions.**
-
+<img src="logo.svg" alt="isolated" width="200"/>
 
 ## Overview
 
