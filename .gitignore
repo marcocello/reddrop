@@ -15,6 +15,7 @@
 !*.py
 !*.md
 !*.svg
+!*.mp4
 
 # 4. Block some directories and files
 *.git
