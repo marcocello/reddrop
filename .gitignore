@@ -10,7 +10,8 @@
 !.gitignore
 !LICENSE
 !**/.vscode/*.json
-!app/.env_template
+!**/.env_template
+!**/*.toml_template
 !**/requirements.txt
 !*.py
 !*.md
