@@ -10,6 +10,10 @@ from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 import streamlit as st
+from langchain.globals import set_llm_cache
+
+# Disable LangChain's caching
+set_llm_cache(None)
 
 from dotenv import load_dotenv
 
