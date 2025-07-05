@@ -109,6 +109,7 @@ if st.button("Find Relevant Threads", type="primary"):
                         'Comments': thread['num_comments'],
                         'Upvotes': thread['score'],
                         "Semantic Similarity": thread.get('semantic_similarity', 0.0),
+                        'User Has Commented': "✅" if thread.get('user_has_commented', True) else "❌",
                         'Created': thread['created_utc'],
                         'Thread ID': thread['id']
                     })
@@ -127,17 +128,45 @@ if 'df' in st.session_state and not st.session_state.df.empty:
     if 'generated_comments' not in st.session_state:
         st.session_state.generated_comments = {}
 
+    # Create a search box for filtering threads
+    search_query = st.text_input(
+        "Search Threads",
+        placeholder="Type keywords to filter threads...",
+        help="Search threads by title, subreddit, or other attributes."
+    )
+
+    # Filter the dataframe based on the search query
+    if search_query:
+        filtered_df = st.session_state.df[
+            st.session_state.df.apply(
+                lambda row: search_query.lower() in row.to_string().lower(), axis=1
+            )
+        ]
+    else:
+        filtered_df = st.session_state.df
+
+    # # Add user_has_commented column for display before filtering
+    # filtered_df['User Has Commented'] = [
+    #     "✅" if thread.get('user_has_commented', False) else "❌"
+    #     for thread in filtered_df.to_dict('records')
+    # ]
+
+    # Create a toggle to exclude threads where the user has already commented
+    exclude_commented = st.toggle(
+        "Exclude threads where I have already commented",
+        value=False,
+        help="Enable this to hide threads where you have already commented."
+    )
+
+    # Filter the dataframe based on the toggle
+    if exclude_commented:
+        filtered_df = filtered_df[~filtered_df['User Has Commented'].str.contains("✅")]
+
     # Create an interactive table with selection
-    display_df = st.session_state.df.copy()
+    display_df = filtered_df.copy()
 
     # Add a selection column for easier identification
     display_df.insert(0, 'Select', False)
-
-    # Add user_has_commented column for display
-    display_df['User Has Commented'] = [
-        "✅" if thread.get('user_has_commented', False) else "❌"
-        for thread in st.session_state.recommended_threads
-    ]
 
     col1, col2 = st.columns([2, 1])
 
@@ -171,7 +200,7 @@ if 'df' in st.session_state and not st.session_state.df.empty:
             },
             height=600,
             row_height=90,
-            disabled=["Subreddit", "Thread Title", "Comments", "Upvotes", "Created", "User Has Commented"],
+            disabled=["Subreddit", "Thread Title", "Comments", "Upvotes", "Created"],
             key="thread_selection_table"
         )
     
