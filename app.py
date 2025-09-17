@@ -66,79 +66,110 @@ with st.sidebar:
                 try:
                     with open(f'data/{file}', 'r') as f:
                         data = json.load(f)
-                        title = data['content'][:50] + '...' if len(data['content']) > 50 else data['content']
-                        date_str = datetime.datetime.fromisoformat(data['timestamp']).strftime('%Y-%m-%d %H:%M')
-                        subreddits_count = len(data['subreddits'])
+                        # Use analysis_name if available, otherwise fallback to first 5 words of content
+                        if 'analysis_name' in data:
+                            title = data['analysis_name']
+                        else:
+                            title = ' '.join(data['content'].split()[:5])
+                        timestamp = datetime.datetime.fromisoformat(data['timestamp'])
                         search_history.append({
                             'title': title,
-                            'date': date_str,
-                            'subreddits': subreddits_count,
+                            'timestamp': timestamp,
                             'filename': file
                         })
                 except Exception as e:
                     st.error(f"Error loading {file}: {e}")
     
-    for i, analysis in enumerate(search_history):
-        with st.container():
-            # Create a grey link without underline and handle clicks
-            link_key = f"link_clicked_{analysis['filename']}"
-            if link_key not in st.session_state:
-                st.session_state[link_key] = False
-            
-            # Use a button styled to look like a grey link
-            if st.button(
-                analysis['title'], 
-                key=f"load_{analysis['filename']}", 
-                help="Click to load this analysis",
-                use_container_width=True,
-                type="tertiary"
-            ):
-                # Load the data
-                with open(f"data/{analysis['filename']}", 'r') as f:
-                    data = json.load(f)
-                
-                # Populate session state including the content in text input
-                st.session_state.content = data['content']
-                all_threads = data['threads']
-                
-                # Recreate df_data
-                df_data = []
-                for thread in all_threads:
-                    # Only convert timestamp if it's not already a string
-                    if isinstance(thread['created_utc'], (int, float)):
-                        thread['created_utc'] = datetime.datetime.fromtimestamp(thread['created_utc'], datetime.UTC).isoformat()
-                    df_data.append({
-                        'Subreddit': f"r/{thread['subreddit']}",
-                        'Thread Title': thread['title'],
-                        'URL': thread.get('url', ''),
-                        'Comments': thread['num_comments'],
-                        'Upvotes': thread['score'],
-                        "Semantic Similarity": thread.get('semantic_similarity', 0.0),
-                        'User Has Commented': "✅" if thread.get('user_has_commented', True) else "❌",
-                        'Created': thread['created_utc'],
-                        'Thread ID': thread['id']
-                    })
-                
-                st.session_state.df = pd.DataFrame(df_data)
-                st.session_state.recommended_threads = all_threads
-                st.session_state.keywords = all_threads[0].get('keywords_used', []) if all_threads else []
-                
-                # Clear previous generated comments
-                st.session_state.generated_comments = {}
-                st.session_state.sent_comments = set()
-                
-                st.success("Loaded previous search results!")
-                st.rerun()
-            
-            st.caption(f"{analysis['date']} • {analysis['subreddits']} subreddits")
+    # Group analyses by date categories
+    today = datetime.datetime.now().date()
+    yesterday = today - datetime.timedelta(days=1)
+    week_ago = today - datetime.timedelta(days=7)
+    month_ago = today - datetime.timedelta(days=30)
+    
+    grouped_analyses = {
+        'Today': [],
+        'Yesterday': [],
+        'This Week': [],
+        'Last Week': [],
+        'Last Month': [],
+        'Older': []
+    }
+    
+    for analysis in search_history:
+        analysis_date = analysis['timestamp'].date()
+        
+        if analysis_date == today:
+            grouped_analyses['Today'].append(analysis)
+        elif analysis_date == yesterday:
+            grouped_analyses['Yesterday'].append(analysis)
+        elif analysis_date > week_ago:
+            grouped_analyses['This Week'].append(analysis)
+        elif analysis_date > today - datetime.timedelta(days=14):
+            grouped_analyses['Last Week'].append(analysis)
+        elif analysis_date > month_ago:
+            grouped_analyses['Last Month'].append(analysis)
+        else:
+            grouped_analyses['Older'].append(analysis)
+    
+    # Display grouped analyses
+    for group_name, analyses in grouped_analyses.items():
+        if analyses:  # Only show groups that have analyses
+            st.markdown(f"<h3 style='color: #999999; font-size: 0.9em; font-weight: normal; margin-bottom: 0.5rem;'>{group_name}</h3>", unsafe_allow_html=True)
+            for analysis in analyses:
+                # Create button for each analysis
+                if st.button(
+                    analysis['title'],
+                    key=f"load_{analysis['filename']}", 
+                    # help="Click to load this analysis",
+                    use_container_width=True,
+                    type="tertiary"
+                ):
+                    # Load the data
+                    with open(f"data/{analysis['filename']}", 'r') as f:
+                        data = json.load(f)
+                    
+                    # Populate session state including the content in text input
+                    st.session_state.content = data['content']
+                    all_threads = data['threads']
+                    
+                    # Recreate df_data
+                    df_data = []
+                    for thread in all_threads:
+                        # Only convert timestamp if it's not already a string
+                        if isinstance(thread['created_utc'], (int, float)):
+                            thread['created_utc'] = datetime.datetime.fromtimestamp(thread['created_utc'], datetime.UTC).isoformat()
+                        df_data.append({
+                            'Subreddit': f"r/{thread['subreddit']}",
+                            'Thread Title': thread['title'],
+                            'URL': thread.get('url', ''),
+                            'Comments': thread['num_comments'],
+                            'Upvotes': thread['score'],
+                            "Semantic Similarity": thread.get('semantic_similarity', 0.0),
+                            'User Has Commented': "✅" if thread.get('user_has_commented', True) else "❌",
+                            'Created': thread['created_utc'],
+                            'Thread ID': thread['id']
+                        })
+                    
+                    st.session_state.df = pd.DataFrame(df_data)
+                    st.session_state.recommended_threads = all_threads
+                    st.session_state.keywords = all_threads[0].get('keywords_used', []) if all_threads else []
+                    
+                    # Clear previous generated comments
+                    st.session_state.generated_comments = {}
+                    st.session_state.sent_comments = set()
+                    
+                    st.success("Loaded previous search results!")
+                    st.rerun()
 
 import streamlit as st
 
+st.markdown("Enter the idea, topic, or message you want to share on Reddit...")
 content = st.text_area(
             "Enter the idea, topic, or message you want to share on Reddit...",
             value=st.session_state.get('content', ''),
             placeholder="",
             help="We'll find relevant subreddits and threads for your content.",
+            label_visibility="collapsed"
         )
 
 quick = st.checkbox("Quick test", value=True, key="quick_test")
@@ -200,11 +231,23 @@ if st.button("Find Relevant Threads", type="primary"):
 
                 # Save search data to JSON
                 timestamp = datetime.datetime.now().isoformat()
+                analysis_name = ' '.join(content.split()[:5])  # First 5 words as analysis name
+                
+                # Clean threads data by removing verbose text fields
+                cleaned_threads = []
+                for thread in all_threads:
+                    cleaned_thread = thread.copy()
+                    # Remove selftext and full_text to reduce file size
+                    cleaned_thread.pop('selftext', None)
+                    cleaned_thread.pop('full_text', None)
+                    cleaned_threads.append(cleaned_thread)
+                
                 search_data = {
+                    'analysis_name': analysis_name,
                     'content': content,
                     'timestamp': timestamp,
                     'subreddits': list(set(thread['subreddit'] for thread in all_threads)),
-                    'threads': all_threads
+                    'threads': cleaned_threads
                 }
                 filename = f"data/{timestamp.replace(':', '-')}.json"
                 os.makedirs('data', exist_ok=True)
