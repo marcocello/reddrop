@@ -1,3 +1,4 @@
+## Whitelist-based .gitignore pattern
 ## From https://jasonstitt.com/gitignore-whitelisting-patterns
 
 # 1. Ignore everything
@@ -10,18 +11,53 @@
 !.gitignore
 !LICENSE
 !**/.vscode/*.json
+!.env_template
 !**/.env_template
 !**/*.toml_template
 !**/requirements.txt
+!**/Dockerfile
+!**/docker-compose.yml
 !*.py
+!*.yaml
+!*.tf
 !*.md
+!*.json
+!*.html
+!*.js
+!*.ts
+!*.tsx
+!*.css
 !*.svg
+!*.png
+!*.jpg
+!*.jpeg
+!*.ico
+!*.txt
 !*.mp4
+!**/reddrop
 
 # 4. Block some directories and files
 *.git
 **/*env
+**/.terraform
 **/.venv
 **/__pycache__
+**/.pytest_cache
+**/node_modules/
+**/**/dist/
+**/dist-ssr/
+*.local
+.DS_Store
+**/bun.lockb
+**/package-lock.json
+*.log
+logs/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 **/TMP
 **/_archive
+.reddrop
