@@ -9,6 +9,7 @@
 
 # 3. Allow specific files and file extensions
 !.gitignore
+!**/.dockerignore
 !LICENSE
 !**/.vscode/*.json
 !.env_template
