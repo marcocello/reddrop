@@ -32,7 +32,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 Frontend URL:
 - `http://127.0.0.1:5173`
 
-## CLI (optional)
+**CLI (optional)**
 
 ```bash
 ./backend/reddrop --help
@@ -44,6 +44,6 @@ Main commands:
 - `reply`
 - `send`
 
-## License
+**License**
 
 MIT
