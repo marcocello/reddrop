@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { Button } from '@/components/ui/button'
@@ -25,10 +25,55 @@ const initialState: SettingsPayload = {
   },
 }
 
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null) return null
+  return value as Record<string, unknown>
+}
+
+function toStringValue(value: unknown, fallback: string): string {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number') return String(value)
+  return fallback
+}
+
+function parseImportedSettings(content: string): SettingsPayload {
+  const parsed = JSON.parse(content) as unknown
+  const root = toRecord(parsed)
+  if (!root) {
+    throw new Error('Invalid settings file format')
+  }
+
+  const reddit = toRecord(root.reddit)
+  const openrouter = toRecord(root.openrouter)
+  if (!reddit || !openrouter) {
+    throw new Error('Settings file must include reddit and openrouter sections')
+  }
+
+  return {
+    reddit: {
+      client_id: toStringValue(reddit.client_id, ''),
+      client_secret: toStringValue(reddit.client_secret, ''),
+      user_agent: toStringValue(reddit.user_agent, ''),
+      username: toStringValue(reddit.username, ''),
+      password: toStringValue(reddit.password, ''),
+    },
+    openrouter: {
+      api_key: toStringValue(openrouter.api_key, ''),
+      base_url: toStringValue(openrouter.base_url, ''),
+      model: toStringValue(openrouter.model, ''),
+      http_referer: toStringValue(openrouter.http_referer, ''),
+      x_title: toStringValue(openrouter.x_title, ''),
+      timeout_seconds: toStringValue(openrouter.timeout_seconds, '20'),
+    },
+  }
+}
+
 export function SettingsPage() {
   const [settings, setSettings] = useState<SettingsPayload>(initialState)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const importInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     const load = async () => {
@@ -60,11 +105,44 @@ export function SettingsPage() {
     }
   }
 
+  const openImportDialog = () => {
+    importInputRef.current?.click()
+  }
+
+  const importSettings = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    setImporting(true)
+    try {
+      const content = await file.text()
+      const imported = parseImportedSettings(content)
+      setSettings(imported)
+      toast.success('Settings imported. Save settings to persist.')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to import settings'
+      toast.error(message)
+    } finally {
+      event.target.value = ''
+      setImporting(false)
+    }
+  }
+
   return (
     <>
       <Header fixed>
         <div className='ms-auto flex items-center gap-2'>
-          <Button onClick={() => void save()} disabled={loading || saving}>
+          <input
+            ref={importInputRef}
+            type='file'
+            accept='application/json,.json'
+            className='hidden'
+            onChange={(event) => void importSettings(event)}
+          />
+          <Button variant='outline' onClick={openImportDialog} disabled={loading || saving || importing}>
+            {importing ? 'Importing...' : 'Import settings'}
+          </Button>
+          <Button onClick={() => void save()} disabled={loading || saving || importing}>
             Save settings
           </Button>
         </div>

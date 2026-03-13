@@ -131,6 +131,8 @@ def test_generate_response_sync_rebinds_client_when_loop_changes(monkeypatch) ->
     service = llm_service_module.LLMService()
 
     first = service.generate_response_sync("sys", "hello")
+    # Force a loop-id mismatch to deterministically exercise client rebinding.
+    service._client_loop_id = -1
     second = service.generate_response_sync("sys", "hello again")
 
     assert first == "stub response"

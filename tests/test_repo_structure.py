@@ -30,6 +30,10 @@ def test_repo_layout_for_backend_and_frontend() -> None:
     frontend_dockerfile = Path("frontend/Dockerfile").read_text(encoding="utf-8")
     assert "if [ -f package-lock.json ]" in frontend_dockerfile
 
+    settings_ui = Path("frontend/src/features/settings/index.tsx").read_text(encoding="utf-8")
+    assert "Import settings" in settings_ui
+    assert "type='file'" in settings_ui
+
 
 def test_gitignore_is_merged() -> None:
     source = Path(".gitignore").read_text(encoding="utf-8")

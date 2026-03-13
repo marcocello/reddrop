@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-MIN_REPLY_SIMILARITY = 0.35
+DEFAULT_MIN_REPLY_SIMILARITY = 0.35
 
 
 def _never_stop() -> bool:
@@ -49,6 +49,18 @@ def _similarity_value(conversation: Any) -> float:
         return 0.0
 
 
+def _resolve_min_similarity(raw: object) -> float:
+    try:
+        value = float(raw)  # type: ignore[arg-type]
+    except Exception:
+        return DEFAULT_MIN_REPLY_SIMILARITY
+    if value < 0:
+        return 0.0
+    if value > 1:
+        return 1.0
+    return value
+
+
 def handle(args, emit, error, deps: ReplyDependencies) -> int:
     if deps.should_stop():
         return error("Run stopped by user request.")
@@ -68,10 +80,12 @@ def handle(args, emit, error, deps: ReplyDependencies) -> int:
         if getattr(item, "reply", "").strip()
     }
 
+    min_similarity = _resolve_min_similarity(getattr(args, "min_similarity", DEFAULT_MIN_REPLY_SIMILARITY))
+
     eligible = [
         item
         for item in search_artifact.conversations
-        if (item.thread_id, item.subreddit) not in replied_keys and _similarity_value(item) >= MIN_REPLY_SIMILARITY
+        if (item.thread_id, item.subreddit) not in replied_keys and _similarity_value(item) >= min_similarity
     ]
     ranked = sorted(eligible, key=_similarity_value, reverse=True)
     selected = ranked[: args.replies]
@@ -94,7 +108,7 @@ def handle(args, emit, error, deps: ReplyDependencies) -> int:
         len(selected),
         len(eligible),
         len(replied_keys),
-        MIN_REPLY_SIMILARITY,
+        min_similarity,
         len(search_artifact.conversations),
     )
 
@@ -140,6 +154,7 @@ def handle(args, emit, error, deps: ReplyDependencies) -> int:
             "reply_file": search_path.name,
             "generated": len(generated_map),
             "total_with_replies": total_with_replies,
+            "min_similarity": min_similarity,
         }
     )
     return 0

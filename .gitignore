@@ -38,6 +38,7 @@
 !*.mp4
 !*.conf
 !**/.reddrop
+!**/reddrop
 
 # 4. Block some directories and files
 *.git

@@ -21,7 +21,10 @@ def handle(
     job = store.upsert_job(
         job_id=target_job_id,
         name=args.name,
+        job_type=getattr(args, "job_type", "search"),
+        source_job_id=getattr(args, "source_job_id", None),
         topic=args.topic,
+        min_similarity_score=getattr(args, "min_similarity_score", 0.35),
         active=bool(getattr(args, "active", False)),
         time_filter=args.time_filter,
         subreddit_limit=args.subreddit_limit,

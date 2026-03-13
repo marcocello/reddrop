@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -50,7 +51,10 @@ class PersonaProfile(BaseModel):
 class PeriodicSearchJob(BaseModel):
     id: str = Field(validation_alias=AliasChoices("id", "job_id"))
     name: str
+    job_type: Literal["search", "reply"] = "search"
+    source_job_id: str | None = None
     topic: str
+    min_similarity_score: float = 0.35
     active: bool = False
     time_filter: str = "week"
     subreddit_limit: int = 5

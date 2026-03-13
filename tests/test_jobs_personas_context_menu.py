@@ -13,7 +13,8 @@ def test_jobs_duplicate_opens_prefilled_create_modal() -> None:
     source = Path('frontend/src/features/jobs/index.tsx').read_text(encoding='utf-8')
     assert 'setForm({' in source
     assert 'name: duplicateName' in source
-    assert 'topic: job.topic' in source
+    assert "topic: job.job_type === 'reply' ? '' : job.topic" in source
+    assert 'min_similarity_score: job.min_similarity_score' in source
     assert 'active: job.active' in source
     assert 'time_filter: job.time_filter' in source
     assert 'setCreateDialogOpen(true)' in source
