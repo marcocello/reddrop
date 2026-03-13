@@ -27,6 +27,9 @@ def test_repo_layout_for_backend_and_frontend() -> None:
     assert "location /api/" in nginx
     assert "proxy_pass http://backend:8000/" in nginx
 
+    frontend_dockerfile = Path("frontend/Dockerfile").read_text(encoding="utf-8")
+    assert "if [ -f package-lock.json ]" in frontend_dockerfile
+
 
 def test_gitignore_is_merged() -> None:
     source = Path(".gitignore").read_text(encoding="utf-8")
