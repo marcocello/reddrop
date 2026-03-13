@@ -414,7 +414,14 @@ export function PersonasPage() {
           <Button size='sm' onClick={openCreateDialog}>
             Create persona
           </Button>
-          <Button variant='outline' size='sm' onClick={() => void loadPersonas()} disabled={loading}>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => void loadPersonas()}
+            disabled={loading}
+            aria-label='Refresh personas'
+            title='Refresh personas'
+          >
             <RefreshCw className='size-4' />
             Refresh
           </Button>

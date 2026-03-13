@@ -72,7 +72,7 @@ import {
 } from '@/lib/reddrop-api'
 
 const ACTIONS_COLUMN_ID = 'actions'
-const AUTO_REFRESH_INTERVAL_MS = 5000
+const AUTO_REFRESH_INTERVAL_MS = 2000
 
 function buildInitialForm(): UpsertJobPayload {
   return {
@@ -955,14 +955,14 @@ export function JobsPage() {
           </Button>
           <Button
             variant='outline'
-            size='icon'
-            className='size-8'
+            size='sm'
             onClick={() => void load()}
             disabled={loading}
             aria-label='Refresh jobs'
             title='Refresh jobs'
           >
-            <RefreshCw className='size-4' />
+            <RefreshCw className='size-4 animate-spin [animation-duration:2s]' />
+            Refresh
           </Button>
         </div>
       </Header>
