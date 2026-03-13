@@ -15,7 +15,9 @@
 - `backend/models.py`: job/search data contracts.
 - `frontend/`: React + Vite dashboard derived from `satnaing/shadcn-admin`, trimmed to jobs/personas/threads/settings views.
 - `backend/Dockerfile`: backend image definition for FastAPI/CLI runtime.
-- `deployment/docker-compose.yml`: local backend container wiring.
+- `frontend/Dockerfile`: frontend multi-stage image (Node build + Nginx serve).
+- `deployment/frontend.nginx.conf`: Nginx SPA + `/api` reverse proxy to backend.
+- `deployment/docker-compose.yml`: local multi-service container wiring for backend + frontend.
 
 ## Command Boundaries
 - `add`: create or update one job configuration identified by `name`.

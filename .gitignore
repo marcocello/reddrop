@@ -28,6 +28,7 @@
 !*.ts
 !*.tsx
 !*.css
+!*.conf
 !*.svg
 !*.png
 !*.jpg
