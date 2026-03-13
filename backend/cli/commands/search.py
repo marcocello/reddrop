@@ -99,7 +99,7 @@ def handle(
     deps: SearchDependencies,
 ) -> int:
     deps.logger.info("Starting search execution.")
-    jobs = store.list_jobs()
+    jobs = [job for job in store.list_jobs() if getattr(job, "job_type", "search") == "search"]
     if not jobs:
         return error("Job not found")
 
@@ -107,6 +107,9 @@ def handle(
     if args.name:
         selected_jobs = [job for job in jobs if job.name == args.name]
         if not selected_jobs:
+            exists_any = store.get_job_by_name(args.name)
+            if exists_any is not None and getattr(exists_any, "job_type", "search") != "search":
+                return error(f"Job is not a search job: {args.name}")
             return error(f"Job not found: {args.name}")
         deps.logger.info("Running one job by name: %s", args.name)
     else:

@@ -22,7 +22,6 @@ import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -67,17 +66,21 @@ import { toast } from 'sonner'
 import {
   reddropApi,
   type Job,
+  type JobType,
   type PersonaProfile,
   type UpsertJobPayload,
 } from '@/lib/reddrop-api'
-import { AutoRefreshMenu } from '@/components/auto-refresh-menu'
 
 const ACTIONS_COLUMN_ID = 'actions'
+const AUTO_REFRESH_INTERVAL_MS = 5000
 
 function buildInitialForm(): UpsertJobPayload {
   return {
     name: '',
+    job_type: 'search',
+    source_job_id: null,
     topic: '',
+    min_similarity_score: 0.35,
     active: false,
     time_filter: 'week',
     subreddit_limit: 5,
@@ -124,6 +127,20 @@ function activeBadgeClass(active: boolean): string {
   return active ? 'bg-emerald-600 text-white' : 'bg-muted text-muted-foreground'
 }
 
+function formatJobType(value: JobType): string {
+  return value === 'reply' ? 'Reply' : 'Search'
+}
+
+function jobTypeBadgeClass(_value: JobType): string {
+  return 'bg-muted text-muted-foreground'
+}
+
+function displayJobTopic(job: Pick<Job, 'job_type' | 'topic'>): string {
+  if (job.job_type === 'reply') return 'N/A'
+  const normalized = job.topic.trim()
+  return normalized || '-'
+}
+
 function shortId(value: string): string {
   const normalized = value.trim()
   if (!normalized) return '-'
@@ -139,6 +156,39 @@ function buildDuplicateJobName(baseName: string, existingNames: Set<string>): st
     index += 1
   }
   return attempt
+}
+
+function normalizeNameToken(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return normalized || 'job'
+}
+
+function buildReplySuffix(sourceSearchJobName?: string): string {
+  if (!sourceSearchJobName) return 'reply_'
+  return `reply_${normalizeNameToken(sourceSearchJobName)}`
+}
+
+function extractReplyPrefix(name: string, sourceSearchJobName?: string): string {
+  const normalized = normalizeNameToken(name)
+  const suffix = buildReplySuffix(sourceSearchJobName)
+  if (!normalized || normalized === suffix) return ''
+  const suffixToken = `_${suffix}`
+  if (normalized.endsWith(suffixToken)) {
+    return normalized.slice(0, -suffixToken.length)
+  }
+  return normalized
+}
+
+function buildReplyJobName(prefix: string, sourceSearchJobName?: string): string {
+  const suffix = buildReplySuffix(sourceSearchJobName)
+  const normalizedPrefix = extractReplyPrefix(prefix, sourceSearchJobName)
+  if (!normalizedPrefix) return suffix
+  return `${normalizedPrefix}_${suffix}`
 }
 
 export function JobsPage() {
@@ -160,7 +210,6 @@ export function JobsPage() {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [form, setForm] = useState<UpsertJobPayload>(buildInitialForm)
   const [saving, setSaving] = useState(false)
-  const [autoRefreshSeconds, setAutoRefreshSeconds] = useState(0)
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -195,12 +244,11 @@ export function JobsPage() {
   }, [load, loadPersonas])
 
   useEffect(() => {
-    if (autoRefreshSeconds <= 0) return
     const timer = window.setInterval(() => {
       void load()
-    }, autoRefreshSeconds * 1000)
+    }, AUTO_REFRESH_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [autoRefreshSeconds, load])
+  }, [load])
 
   const statusFilterOptions = useMemo(() => {
     const statuses = new Set<string>()
@@ -218,6 +266,26 @@ export function JobsPage() {
       .map((value) => ({ label: formatStatusLabel(value), value }))
   }, [jobs])
 
+  const jobTypeFilterOptions = useMemo(() => {
+    const values = new Set<JobType>()
+    jobs.forEach((job) => values.add(job.job_type))
+    return Array.from(values).map((value) => ({
+      label: formatJobType(value),
+      value,
+    }))
+  }, [jobs])
+
+  const searchingJobOptions = useMemo(
+    () => jobs.filter((job) => job.job_type === 'search'),
+    [jobs]
+  )
+
+  const sourceSearchNameById = useMemo(() => {
+    const map = new Map<string, string>()
+    searchingJobOptions.forEach((job) => map.set(job.id, job.name))
+    return map
+  }, [searchingJobOptions])
+
   const openCreateDialog = useCallback((): void => {
     setSelectedJob(null)
     setForm(buildInitialForm())
@@ -230,26 +298,42 @@ export function JobsPage() {
     setSheetOpen(true)
   }, [])
 
-  const togglePersona = useCallback((personaName: string, checked: boolean | 'indeterminate'): void => {
-    setForm((prev) => {
-      if (checked === true) {
-        if (prev.personas.includes(personaName)) {
-          return prev
-        }
-        return { ...prev, personas: [...prev.personas, personaName] }
-      }
-      return {
-        ...prev,
-        personas: prev.personas.filter((item) => item !== personaName),
-      }
-    })
-  }, [])
-
   const createJob = useCallback(async (): Promise<void> => {
+    if (form.job_type === 'search' && !form.topic.trim()) {
+      toast.error('Topic is required for search jobs')
+      return
+    }
+    if (form.job_type === 'reply' && !form.source_job_id) {
+      toast.error('Source search job is required for reply jobs')
+      return
+    }
+    if (form.job_type === 'reply' && form.personas.length === 0) {
+      toast.error('At least one persona is required for reply jobs')
+      return
+    }
+
+    const sourceName =
+      form.source_job_id ? sourceSearchNameById.get(form.source_job_id) : undefined
+    let normalizedName = form.name.trim()
+    if (form.job_type === 'reply') {
+      normalizedName = buildReplyJobName(normalizedName, sourceName)
+    }
+    if (!normalizedName) {
+      toast.error('Job name is required')
+      return
+    }
+
+    const payload: UpsertJobPayload = {
+      ...form,
+      name: normalizedName,
+      topic: form.job_type === 'search' ? form.topic : '',
+      source_job_id: form.job_type === 'reply' ? form.source_job_id : null,
+    }
+
     setSaving(true)
     try {
-      await reddropApi.createJob(form)
-      toast.success(`Created job ${form.name}`)
+      await reddropApi.createJob(payload)
+      toast.success(`Created ${formatJobType(payload.job_type).toLowerCase()} job ${payload.name}`)
       await load()
       setCreateDialogOpen(false)
       setSelectedJob(null)
@@ -260,7 +344,7 @@ export function JobsPage() {
     } finally {
       setSaving(false)
     }
-  }, [form, load])
+  }, [form, load, sourceSearchNameById])
 
   const runAction = useCallback(async (job: Job, action: 'start' | 'stop'): Promise<void> => {
     const key = `${job.id}:${action}`
@@ -315,22 +399,29 @@ export function JobsPage() {
 
   const openDuplicateJobDialog = useCallback((job: Job): void => {
     const existingNames = new Set(jobs.map((item) => item.name.trim().toLowerCase()))
-    const duplicateName = buildDuplicateJobName(job.name, existingNames)
+    let duplicateName = buildDuplicateJobName(job.name, existingNames)
+    if (job.job_type === 'reply') {
+      const sourceName = job.source_job_id ? sourceSearchNameById.get(job.source_job_id) : undefined
+      duplicateName = extractReplyPrefix(duplicateName, sourceName)
+    }
     setSelectedJob(null)
     setSheetOpen(false)
     setForm({
       name: duplicateName,
-      topic: job.topic,
+      job_type: job.job_type,
+      source_job_id: job.source_job_id ?? null,
+      topic: job.job_type === 'reply' ? '' : job.topic,
+      min_similarity_score: job.min_similarity_score,
       active: job.active,
       time_filter: job.time_filter,
       subreddit_limit: job.subreddit_limit,
       threads_limit: job.threads_limit,
       replies_per_iteration: job.replies_per_iteration,
       max_runtime_minutes: job.max_runtime_minutes,
-      personas: [...job.personas],
+      personas: job.job_type === 'reply' && job.personas.length > 0 ? [job.personas[0]] : [...job.personas],
     })
     setCreateDialogOpen(true)
-  }, [jobs])
+  }, [jobs, sourceSearchNameById])
 
   const requestDeleteJob = useCallback((job: Job): void => {
     setPendingDeleteJob(job)
@@ -360,6 +451,39 @@ export function JobsPage() {
         cell: ({ row }) => <span className='font-medium'>{row.original.name}</span>,
       },
       {
+        id: 'job_type',
+        accessorFn: (row) => row.job_type,
+        filterFn: arrayFilterFn,
+        header: ({ column }) => <DataTableColumnHeader column={column} title='Type' />,
+        cell: ({ row }) => (
+          <Badge className={jobTypeBadgeClass(row.original.job_type)}>
+            {formatJobType(row.original.job_type)}
+          </Badge>
+        ),
+      },
+      {
+        id: 'source',
+        accessorFn: (row) => {
+          if (row.job_type !== 'reply') return '-'
+          if (!row.source_job_id) return '-'
+          return sourceSearchNameById.get(row.source_job_id) ?? row.source_job_id
+        },
+        header: ({ column }) => <DataTableColumnHeader column={column} title='Source' />,
+        cell: ({ row }) => {
+          if (row.original.job_type !== 'reply' || !row.original.source_job_id) {
+            return <span className='text-muted-foreground'>-</span>
+          }
+          const sourceId = row.original.source_job_id
+          const sourceName = sourceSearchNameById.get(sourceId) ?? sourceId
+          return (
+            <div className='leading-tight'>
+              <span className='block truncate text-sm font-medium'>{sourceName}</span>
+              <span className='block font-mono text-xs text-muted-foreground'>{shortId(sourceId)}</span>
+            </div>
+          )
+        },
+      },
+      {
         id: 'active',
         accessorFn: (row) => (row.active ? 'active' : 'inactive'),
         filterFn: arrayFilterFn,
@@ -384,11 +508,14 @@ export function JobsPage() {
       {
         accessorKey: 'topic',
         header: ({ column }) => <DataTableColumnHeader column={column} title='Topic' />,
-        cell: ({ row }) => (
-          <span className='block max-w-[24rem] truncate' title={row.original.topic}>
-            {row.original.topic}
-          </span>
-        ),
+        cell: ({ row }) => {
+          const topicLabel = displayJobTopic(row.original)
+          return (
+            <span className='block max-w-[24rem] truncate' title={topicLabel}>
+              {topicLabel}
+            </span>
+          )
+        },
       },
       {
         accessorKey: 'last_run_status',
@@ -468,7 +595,7 @@ export function JobsPage() {
         },
       },
     ],
-    [activationAction, openDuplicateJobDialog, openJobSheet, requestDeleteJob, runAction]
+    [activationAction, openDuplicateJobDialog, openJobSheet, requestDeleteJob, runAction, sourceSearchNameById]
   )
 
   const orderedColumnIds = useMemo(
@@ -528,7 +655,11 @@ export function JobsPage() {
       return (
         job.id.toLowerCase().includes(query) ||
         job.name.toLowerCase().includes(query) ||
-        job.topic.toLowerCase().includes(query) ||
+        job.job_type.toLowerCase().includes(query) ||
+        (job.source_job_id
+          ? (sourceSearchNameById.get(job.source_job_id) ?? job.source_job_id).toLowerCase().includes(query)
+          : false) ||
+        displayJobTopic(job).toLowerCase().includes(query) ||
         (job.active ? 'active' : 'inactive').includes(query) ||
         (job.runtime?.status ?? 'idle').toLowerCase().includes(query) ||
         (job.last_run_status ?? 'never').toLowerCase().includes(query)
@@ -560,99 +691,224 @@ export function JobsPage() {
   const renderJobFormFields = (prefix: string) => (
     <>
       <div className='space-y-2'>
-        <Label htmlFor={`${prefix}-job-name`}>Name</Label>
-        <Input
-          id={`${prefix}-job-name`}
-          value={form.name}
-          onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-          placeholder='growth'
-          required
-        />
-      </div>
-
-      <div className='space-y-2'>
-        <Label htmlFor={`${prefix}-job-active`}>Active</Label>
+        <Label htmlFor={`${prefix}-job-type`}>Job type</Label>
         <Select
-          value={form.active ? 'active' : 'inactive'}
-          onValueChange={(value) =>
-            setForm((prev) => ({ ...prev, active: value === 'active' }))
-          }
+          value={form.job_type}
+          onValueChange={(value) => {
+            const nextType = value as JobType
+            const sourceName =
+              nextType === 'reply' && form.source_job_id
+                ? sourceSearchNameById.get(form.source_job_id)
+                : undefined
+            setForm((prev) => ({
+              ...prev,
+              job_type: nextType,
+              source_job_id: nextType === 'reply' ? prev.source_job_id : null,
+              topic: nextType === 'reply' ? '' : prev.topic,
+              personas: nextType === 'reply' ? (prev.personas.length > 0 ? [prev.personas[0]] : []) : [],
+              name: nextType === 'reply' ? extractReplyPrefix(prev.name, sourceName) : prev.name,
+            }))
+          }}
         >
-          <SelectTrigger id={`${prefix}-job-active`} className='w-full'>
+          <SelectTrigger id={`${prefix}-job-type`} className='w-full'>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value='active'>Active</SelectItem>
-            <SelectItem value='inactive'>Inactive</SelectItem>
+            <SelectItem value='search'>Search</SelectItem>
+            <SelectItem value='reply'>Reply</SelectItem>
           </SelectContent>
         </Select>
       </div>
 
-      <div className='space-y-2'>
-        <Label htmlFor={`${prefix}-job-topic`}>Topic</Label>
-        <Textarea
-          id={`${prefix}-job-topic`}
-          value={form.topic}
-          onChange={(event) => setForm((prev) => ({ ...prev, topic: event.target.value }))}
-          placeholder='AI launch strategy'
-          rows={4}
-          required
-        />
-      </div>
-
-      <div className='grid gap-3 sm:grid-cols-3'>
+      {form.job_type === 'reply' ? (
         <div className='space-y-2'>
-          <Label htmlFor={`${prefix}-job-time-filter`}>Time filter</Label>
+          <Label htmlFor={`${prefix}-source-job-id`}>Source search job</Label>
           <Select
-            value={form.time_filter}
-            onValueChange={(value) => setForm((prev) => ({ ...prev, time_filter: value }))}
+            value={form.source_job_id ?? undefined}
+            onValueChange={(value) =>
+              setForm((prev) => ({
+                ...prev,
+                source_job_id: value,
+                name: extractReplyPrefix(prev.name, sourceSearchNameById.get(value)),
+              }))
+            }
           >
-            <SelectTrigger id={`${prefix}-job-time-filter`} className='w-full'>
-              <SelectValue />
+            <SelectTrigger id={`${prefix}-source-job-id`} className='w-full'>
+              <SelectValue placeholder='Select a Search job' />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value='hour'>hour</SelectItem>
-              <SelectItem value='day'>day</SelectItem>
-              <SelectItem value='week'>week</SelectItem>
-              <SelectItem value='month'>month</SelectItem>
-              <SelectItem value='year'>year</SelectItem>
-              <SelectItem value='all'>all</SelectItem>
+              {searchingJobOptions.map((job) => (
+                <SelectItem key={job.id} value={job.id}>
+                  {job.name}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
+          <p className='text-xs text-muted-foreground'>
+            Reply jobs read threads from this linked Search job.
+          </p>
         </div>
+      ) : null}
 
-        <div className='space-y-2'>
-          <Label htmlFor={`${prefix}-subreddit-limit`}>Subreddit limit</Label>
+      <div className='space-y-2'>
+        <Label htmlFor={`${prefix}-job-name`}>Name</Label>
+        {form.job_type === 'reply' ? (
+          <div className='flex items-center gap-2'>
+            <Input
+              id={`${prefix}-job-name`}
+              value={form.name}
+              onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+              placeholder='campaign'
+              className='w-full sm:max-w-[12rem]'
+              required
+            />
+            <Input
+              id={`${prefix}-job-name-suffix`}
+              value={buildReplySuffix(sourceSearchNameById.get(form.source_job_id ?? ''))}
+              readOnly
+              aria-label='Name suffix'
+              className='w-full sm:max-w-[16rem] bg-muted/40 text-muted-foreground'
+            />
+          </div>
+        ) : (
           <Input
-            id={`${prefix}-subreddit-limit`}
-            type='number'
-            min={1}
-            value={form.subreddit_limit}
-            onChange={(event) =>
-              setForm((prev) => ({
-                ...prev,
-                subreddit_limit: Number(event.target.value || 1),
-              }))
-            }
+            id={`${prefix}-job-name`}
+            value={form.name}
+            onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+            placeholder='growth'
+            required
           />
-        </div>
-
-        <div className='space-y-2'>
-          <Label htmlFor={`${prefix}-threads-limit`}>Threads limit</Label>
-          <Input
-            id={`${prefix}-threads-limit`}
-            type='number'
-            min={1}
-            value={form.threads_limit}
-            onChange={(event) =>
-              setForm((prev) => ({
-                ...prev,
-                threads_limit: Number(event.target.value || 1),
-              }))
-            }
-          />
-        </div>
+        )}
+        {form.job_type === 'reply' ? (
+          <p className='text-xs text-muted-foreground'>
+            Final name: {buildReplyJobName(form.name, sourceSearchNameById.get(form.source_job_id ?? ''))}
+          </p>
+        ) : null}
       </div>
+
+      {form.job_type === 'search' ? (
+        <>
+          <div className='space-y-2'>
+            <Label htmlFor={`${prefix}-job-topic`}>Topic</Label>
+            <Textarea
+              id={`${prefix}-job-topic`}
+              value={form.topic}
+              onChange={(event) => setForm((prev) => ({ ...prev, topic: event.target.value }))}
+              placeholder='AI launch strategy'
+              rows={4}
+              required
+            />
+          </div>
+
+          <div className='grid gap-3 sm:grid-cols-3'>
+            <div className='space-y-2'>
+              <Label htmlFor={`${prefix}-job-time-filter`}>Time filter</Label>
+              <Select
+                value={form.time_filter}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, time_filter: value }))}
+              >
+                <SelectTrigger id={`${prefix}-job-time-filter`} className='w-full'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value='hour'>hour</SelectItem>
+                  <SelectItem value='day'>day</SelectItem>
+                  <SelectItem value='week'>week</SelectItem>
+                  <SelectItem value='month'>month</SelectItem>
+                  <SelectItem value='year'>year</SelectItem>
+                  <SelectItem value='all'>all</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className='space-y-2'>
+              <Label htmlFor={`${prefix}-subreddit-limit`}>Subreddit limit</Label>
+              <Input
+                id={`${prefix}-subreddit-limit`}
+                type='number'
+                min={1}
+                value={form.subreddit_limit}
+                onChange={(event) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    subreddit_limit: Number(event.target.value || 1),
+                  }))
+                }
+              />
+            </div>
+
+            <div className='space-y-2'>
+              <Label htmlFor={`${prefix}-threads-limit`}>Threads limit</Label>
+              <Input
+                id={`${prefix}-threads-limit`}
+                type='number'
+                min={1}
+                value={form.threads_limit}
+                onChange={(event) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    threads_limit: Number(event.target.value || 1),
+                  }))
+                }
+              />
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className='space-y-2'>
+            <Label htmlFor={`${prefix}-reply-persona`}>Persona</Label>
+            {personaOptions.length > 0 ? (
+              <Select
+                value={form.personas[0] ?? undefined}
+                onValueChange={(value) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    personas: [value],
+                  }))
+                }
+              >
+                <SelectTrigger id={`${prefix}-reply-persona`} className='w-full'>
+                  <SelectValue placeholder='Select a persona' />
+                </SelectTrigger>
+                <SelectContent>
+                  {personaOptions.map((persona) => (
+                    <SelectItem key={persona.name} value={persona.name}>
+                      {persona.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <p className='text-sm text-muted-foreground'>
+                No personas found. Open the Personas page to add one.
+              </p>
+            )}
+          </div>
+
+          <div className='space-y-2'>
+            <Label htmlFor={`${prefix}-min-similarity-score`}>Minimum similarity score</Label>
+            <Input
+              id={`${prefix}-min-similarity-score`}
+              type='number'
+              min={0}
+              max={1}
+              step='0.01'
+              value={form.min_similarity_score}
+              onChange={(event) =>
+                setForm((prev) => {
+                  const numeric = Number.parseFloat(event.target.value)
+                  const bounded = Number.isFinite(numeric) ? Math.min(1, Math.max(0, numeric)) : 0
+                  return {
+                    ...prev,
+                    min_similarity_score: bounded,
+                  }
+                })
+              }
+            />
+          </div>
+        </>
+      )}
 
       <div className='grid gap-3 sm:grid-cols-2'>
         <div className='space-y-2'>
@@ -687,36 +943,6 @@ export function JobsPage() {
           />
         </div>
       </div>
-
-      <div className='space-y-2'>
-        <Label id={`${prefix}-personas-label`}>Select personas</Label>
-        {personaOptions.length > 0 ? (
-          <div
-            role='group'
-            aria-labelledby={`${prefix}-personas-label`}
-            className='grid gap-2 rounded-md border p-3 sm:grid-cols-2'
-          >
-            {personaOptions.map((persona) => (
-              <label
-                key={persona.name}
-                htmlFor={`${prefix}-persona-${persona.name}`}
-                className='flex cursor-pointer items-start gap-3 rounded-md border border-transparent p-2 hover:border-border'
-              >
-                <Checkbox
-                  id={`${prefix}-persona-${persona.name}`}
-                  checked={form.personas.includes(persona.name)}
-                  onCheckedChange={(checked) => togglePersona(persona.name, checked)}
-                />
-                <span className='text-sm'>{persona.name}</span>
-              </label>
-            ))}
-          </div>
-        ) : (
-          <p className='text-sm text-muted-foreground'>
-            No personas found. Open the Personas page to add one.
-          </p>
-        )}
-      </div>
     </>
   )
 
@@ -727,10 +953,6 @@ export function JobsPage() {
           <Button size='sm' onClick={openCreateDialog}>
             Create job
           </Button>
-          <AutoRefreshMenu
-            valueSeconds={autoRefreshSeconds}
-            onValueChange={setAutoRefreshSeconds}
-          />
           <Button
             variant='outline'
             size='icon'
@@ -755,6 +977,9 @@ export function JobsPage() {
             table={table}
             searchPlaceholder='Search by id, name, topic or status...'
             filters={[
+              ...(jobTypeFilterOptions.length > 0
+                ? [{ columnId: 'job_type', title: 'Type', options: jobTypeFilterOptions }]
+                : []),
               ...(activeFilterOptions.length > 0
                 ? [{ columnId: 'active', title: 'Active', options: activeFilterOptions }]
                 : []),
@@ -850,7 +1075,7 @@ export function JobsPage() {
           <ModalDialogHeader>
             <ModalDialogTitle>Create job</ModalDialogTitle>
             <DialogDescription>
-              Configure discovery and reply settings for a new job.
+              Create a Search job (search + rank) or a Reply job (reply from a linked Search artifact).
             </DialogDescription>
           </ModalDialogHeader>
 
@@ -952,7 +1177,12 @@ export function JobsPage() {
                 <div className='grid gap-3 text-sm'>
                   <p><span className='font-medium'>ID:</span> <span className='font-mono'>{selectedJob.id}</span></p>
                   <p><span className='font-medium'>Name:</span> {selectedJob.name}</p>
-                  <p><span className='font-medium'>Topic:</span> {selectedJob.topic}</p>
+                  <p><span className='font-medium'>Type:</span> {formatJobType(selectedJob.job_type)}</p>
+                  <p>
+                    <span className='font-medium'>Source search job:</span>{' '}
+                    {selectedJob.source_job_id ? (sourceSearchNameById.get(selectedJob.source_job_id) ?? selectedJob.source_job_id) : '-'}
+                  </p>
+                  <p><span className='font-medium'>Topic:</span> {selectedJob.job_type === 'reply' ? 'N/A' : selectedJob.topic}</p>
                   <p><span className='font-medium'>Active:</span> {selectedJob.active ? 'Yes' : 'No'}</p>
                   <p><span className='font-medium'>Current status:</span> {formatStatusLabel(selectedJob.runtime?.status)}</p>
                   <p><span className='font-medium'>Last run status:</span> {formatStatusLabel(selectedJob.last_run_status ?? 'never')}</p>
@@ -963,6 +1193,7 @@ export function JobsPage() {
                   <p><span className='font-medium'>Subreddit limit:</span> {selectedJob.subreddit_limit}</p>
                   <p><span className='font-medium'>Threads limit:</span> {selectedJob.threads_limit}</p>
                   <p><span className='font-medium'>Replies per iteration:</span> {selectedJob.replies_per_iteration}</p>
+                  <p><span className='font-medium'>Minimum similarity score:</span> {selectedJob.job_type === 'reply' ? selectedJob.min_similarity_score : '-'}</p>
                   <p><span className='font-medium'>Run interval minutes:</span> {selectedJob.max_runtime_minutes}</p>
                   <p><span className='font-medium'>Personas:</span> {selectedJob.personas.length > 0 ? selectedJob.personas.join(', ') : '-'}</p>
                 </div>

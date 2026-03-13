@@ -6,7 +6,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -46,6 +46,7 @@ DEFAULT_TIME_FILTER = "week"
 DEFAULT_SUBREDDIT_LIMIT = 5
 DEFAULT_THREADS_LIMIT = 10
 DEFAULT_REPLIES_PER_ITERATION = 3
+DEFAULT_MIN_SIMILARITY_SCORE = 0.35
 DEFAULT_MAX_RUNTIME_MINUTES = 1440
 JOB_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 logger = setup_logging(__name__)
@@ -63,12 +64,15 @@ runtime_manager = JobRuntimeManager()
 
 class AddJobRequest(BaseModel):
     name: str
-    topic: str
+    job_type: Literal["search", "reply"] = "search"
+    source_job_id: str | None = None
+    topic: str = ""
     active: bool | None = None
     time_filter: str = DEFAULT_TIME_FILTER
     subreddit_limit: int = DEFAULT_SUBREDDIT_LIMIT
     threads_limit: int = DEFAULT_THREADS_LIMIT
     replies_per_iteration: int = DEFAULT_REPLIES_PER_ITERATION
+    min_similarity_score: float = Field(default=DEFAULT_MIN_SIMILARITY_SCORE, ge=0.0, le=1.0)
     max_runtime_minutes: int = DEFAULT_MAX_RUNTIME_MINUTES
     personas: list[str] = Field(default_factory=list)
 
@@ -81,6 +85,7 @@ class ReplyRequest(BaseModel):
     search_file: str
     personas: str
     replies: int = 3
+    min_similarity: float = Field(default=DEFAULT_MIN_SIMILARITY_SCORE, ge=0.0, le=1.0)
 
 
 class SendRequest(BaseModel):
@@ -166,7 +171,10 @@ def _job_by_ref(job_ref: str) -> PeriodicSearchJob:
 
 def _job_status_payload(job: PeriodicSearchJob) -> dict[str, Any]:
     runtime = runtime_manager.status(job.name)
-    search = _search_storage().get_search(job.id)
+    artifact_job_id = job.id
+    if job.job_type == "reply" and job.source_job_id:
+        artifact_job_id = job.source_job_id
+    search = _search_storage().get_search(artifact_job_id)
     conversations = search.conversations if search is not None else []
     threads_found_total = len(conversations)
     threads_replied_total = sum(1 for item in conversations if bool(item.user_has_commented))
@@ -187,6 +195,21 @@ def _register_runtime_job(job: PeriodicSearchJob) -> None:
     )
 
 
+def _resolve_reply_source_search_file(job: PeriodicSearchJob, store: JobConfigStore) -> str:
+    source_job_id = (job.source_job_id or "").strip()
+    if not source_job_id:
+        raise RuntimeError(f"Reply job {job.name} is missing source_job_id.")
+    source_job = store.get_job_by_id(source_job_id)
+    if source_job is None:
+        raise RuntimeError(f"Reply job source not found: {source_job_id}")
+    if source_job.job_type != "search":
+        raise RuntimeError(f"Reply job source must be a search job: {source_job.name}")
+    source_path = _search_storage().path_for_job(source_job.id)
+    if not source_path.exists():
+        raise RuntimeError(f"Source search artifact not found. Run Search job first: {source_job.name}")
+    return source_path.name
+
+
 def _build_job_runner(job_name: str):
     def _stop_if_requested() -> None:
         if runtime_manager.should_stop(job_name):
@@ -197,29 +220,32 @@ def _build_job_runner(job_name: str):
         job = store.get_job_by_name(job_name)
         if job is None:
             raise RuntimeError(f"Job not found: {job_name}")
+        should_stop = lambda: runtime_manager.should_stop(job_name)
 
-        _stop_if_requested()
-        set_phase("searching")
-        search_file = _run_search_for_job(job.name, should_stop=lambda: runtime_manager.should_stop(job_name))
-        _stop_if_requested()
+        if job.job_type == "search":
+            _stop_if_requested()
+            set_phase("searching")
+            search_file = _run_search_for_job(job.name, should_stop=should_stop)
+            _stop_if_requested()
+            return f"search_file={search_file}"
 
-        if job.personas:
+        if job.job_type == "reply":
+            if not job.personas:
+                raise RuntimeError(f"Reply job {job.name} requires at least one persona.")
+            source_search_file = _resolve_reply_source_search_file(job, store)
+            _stop_if_requested()
             set_phase("replying")
             _run_reply_for_job(
-                search_file=search_file,
+                search_file=source_search_file,
                 persona=job.personas[0],
                 replies=max(1, int(job.replies_per_iteration)),
-                should_stop=lambda: runtime_manager.should_stop(job_name),
+                min_similarity=max(0.0, min(1.0, float(job.min_similarity_score))),
+                should_stop=should_stop,
             )
             _stop_if_requested()
-            set_phase("sending")
-            _run_send_for_job(
-                search_file=search_file,
-                should_stop=lambda: runtime_manager.should_stop(job_name),
-            )
-            _stop_if_requested()
+            return f"reply_file={source_search_file}"
 
-        return f"search_file={search_file}"
+        raise RuntimeError(f"Unsupported job type: {job.job_type}")
 
     return _runner
 
@@ -259,8 +285,20 @@ def _run_search_for_job(job_name: str, *, should_stop=None) -> str:
     return _search_storage().path_for_job(job_id).name
 
 
-def _run_reply_for_job(*, search_file: str, persona: str, replies: int, should_stop=None) -> None:
-    args = argparse.Namespace(search_file=search_file, personas=persona, replies=replies)
+def _run_reply_for_job(
+    *,
+    search_file: str,
+    persona: str,
+    replies: int,
+    min_similarity: float = DEFAULT_MIN_SIMILARITY_SCORE,
+    should_stop=None,
+) -> None:
+    args = argparse.Namespace(
+        search_file=search_file,
+        personas=persona,
+        replies=replies,
+        min_similarity=min_similarity,
+    )
     deps = reply_command.ReplyDependencies(
         logger=logger,
         runs_dir=DEFAULT_RUNS_DIR,
@@ -534,9 +572,30 @@ def create_job(request: AddJobRequest) -> dict[str, Any]:
     existing = store.get_job_by_name(request.name)
     if existing is not None:
         raise HTTPException(status_code=409, detail=f"Job name already exists: {request.name}")
+    source_job: PeriodicSearchJob | None = None
+    if request.job_type == "reply":
+        source_job_id = (request.source_job_id or "").strip()
+        if not source_job_id:
+            raise HTTPException(status_code=400, detail="source_job_id is required for reply jobs.")
+        if not request.personas:
+            raise HTTPException(status_code=400, detail="At least one persona is required for reply jobs.")
+        source_job = store.get_job_by_id(source_job_id)
+        if source_job is None:
+            raise HTTPException(status_code=400, detail=f"Source search job not found: {source_job_id}")
+        if source_job.job_type != "search":
+            raise HTTPException(status_code=400, detail=f"Source job must be search type: {source_job.name}")
+    else:
+        if not request.topic.strip():
+            raise HTTPException(status_code=400, detail="topic is required for search jobs.")
+
+    topic_value = request.topic.strip() if request.job_type == "search" else ""
+
     args = argparse.Namespace(
         name=request.name,
-        topic=request.topic,
+        job_type=request.job_type,
+        source_job_id=(request.source_job_id or "").strip() or None,
+        topic=topic_value,
+        min_similarity_score=request.min_similarity_score,
         active=bool(request.active),
         time_filter=request.time_filter,
         subreddit_limit=request.subreddit_limit,
@@ -682,6 +741,7 @@ def generate_reply(request: ReplyRequest) -> dict[str, Any]:
         search_file=request.search_file,
         personas=request.personas,
         replies=request.replies,
+        min_similarity=request.min_similarity,
     )
     deps = reply_command.ReplyDependencies(
         logger=logger,

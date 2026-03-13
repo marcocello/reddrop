@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from threading import Lock
+from typing import Literal
 
 from ..models import JobsConfig, PeriodicSearchJob
 
@@ -53,7 +54,10 @@ class JobConfigStore:
         *,
         job_id: str,
         name: str,
+        job_type: Literal["search", "reply"] = "search",
+        source_job_id: str | None = None,
         topic: str,
+        min_similarity_score: float = 0.35,
         active: bool = False,
         time_filter: str,
         subreddit_limit: int,
@@ -79,7 +83,10 @@ class JobConfigStore:
             payload = PeriodicSearchJob(
                 id=self._config.jobs[existing].id if existing is not None else normalized_id,
                 name=normalized_name,
-                topic=topic.strip(),
+                job_type=self._normalize_job_type(job_type),
+                source_job_id=self._normalize_source_job_id(source_job_id),
+                topic=self._normalize_topic_for_job_type(job_type=job_type, topic=topic),
+                min_similarity_score=self._normalize_similarity_score(min_similarity_score, fallback=0.35),
                 active=bool(active),
                 time_filter=time_filter,
                 subreddit_limit=subreddit_limit,
@@ -101,7 +108,10 @@ class JobConfigStore:
         *,
         job_id: str,
         name: str,
+        job_type: Literal["search", "reply"] = "search",
+        source_job_id: str | None = None,
         topic: str,
+        min_similarity_score: float = 0.35,
         active: bool = False,
         time_filter: str,
         subreddit_limit: int,
@@ -133,7 +143,10 @@ class JobConfigStore:
             payload = PeriodicSearchJob(
                 id=normalized_id,
                 name=normalized_name,
-                topic=topic.strip(),
+                job_type=self._normalize_job_type(job_type),
+                source_job_id=self._normalize_source_job_id(source_job_id),
+                topic=self._normalize_topic_for_job_type(job_type=job_type, topic=topic),
+                min_similarity_score=self._normalize_similarity_score(min_similarity_score, fallback=0.35),
                 active=bool(active),
                 time_filter=time_filter,
                 subreddit_limit=subreddit_limit,
@@ -169,7 +182,10 @@ class JobConfigStore:
                 updated = PeriodicSearchJob(
                     id=job.id,
                     name=job.name,
+                    job_type=job.job_type,
+                    source_job_id=job.source_job_id,
                     topic=job.topic,
+                    min_similarity_score=job.min_similarity_score,
                     active=bool(active),
                     time_filter=job.time_filter,
                     subreddit_limit=job.subreddit_limit,
@@ -220,6 +236,16 @@ class JobConfigStore:
                     record["name"] = f"job-{index}"
             if not record.get("time_filter"):
                 record["time_filter"] = "week"
+            record["job_type"] = JobConfigStore._normalize_job_type(record.get("job_type"))
+            record["source_job_id"] = JobConfigStore._normalize_source_job_id(record.get("source_job_id"))
+            record["topic"] = JobConfigStore._normalize_topic_for_job_type(
+                job_type=record.get("job_type"),
+                topic=record.get("topic"),
+            )
+            record["min_similarity_score"] = JobConfigStore._normalize_similarity_score(
+                record.get("min_similarity_score"),
+                fallback=0.35,
+            )
             if "active" not in record:
                 record["active"] = False
             if "subreddit_limit" not in record:
@@ -277,3 +303,35 @@ class JobConfigStore:
             seen.add(lowered)
             normalized.append(value)
         return normalized
+
+    @staticmethod
+    def _normalize_job_type(raw: object) -> Literal["search", "reply"]:
+        value = str(raw or "").strip().lower()
+        if value in {"reply", "replying"}:
+            return "reply"
+        return "search"
+
+    @staticmethod
+    def _normalize_source_job_id(raw: object) -> str | None:
+        if raw is None:
+            return None
+        value = str(raw).strip()
+        return value or None
+
+    @staticmethod
+    def _normalize_topic_for_job_type(*, job_type: object, topic: object) -> str:
+        if JobConfigStore._normalize_job_type(job_type) == "reply":
+            return ""
+        return str(topic or "").strip()
+
+    @staticmethod
+    def _normalize_similarity_score(raw: object, *, fallback: float) -> float:
+        try:
+            value = float(raw)  # type: ignore[arg-type]
+        except Exception:
+            return fallback
+        if value < 0.0:
+            return 0.0
+        if value > 1.0:
+            return 1.0
+        return value

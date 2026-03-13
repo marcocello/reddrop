@@ -30,7 +30,7 @@
 - Job config file: `.reddrop/jobs_config.json`.
 - Search artifacts: `.reddrop/runs/search_<job_id_prefix8>.json` (one file per job).
 - Job `id` values are UUIDs generated automatically.
-- Job entries store `id`, `name`, `topic`, `time_filter`, `subreddit_limit`, `threads_limit`, `replies_per_iteration`, `max_runtime_minutes`, and `personas`; `name` is a no-space identifier (`[A-Za-z0-9_-]+`).
+- Job entries store `id`, `name`, `job_type` (`search` or `reply`), optional `source_job_id`, `topic`, `time_filter`, `subreddit_limit`, `threads_limit`, `replies_per_iteration`, `max_runtime_minutes`, and `personas`; `name` is a no-space identifier (`[A-Za-z0-9_-]+`).
 - Search artifact payload includes `id` (job id), `created_at`, `updated_at`, and merged `conversations`.
 - Conversation rows include `reply` and `user_has_commented`, so search/reply/send state is unified in one file per job.
 
@@ -41,6 +41,9 @@
 - `search` accepts an optional job `name` positional argument; without it, all jobs are executed.
 - Discovery tuning flags are accepted by `add` and persisted in job config.
 - `search` does not accept discovery tuning flags and always uses job-config values.
+- Runtime job execution is type-split:
+  - `search` jobs run search + rank only.
+  - `reply` jobs run reply generation only, using artifacts from their linked `source_job_id` search job.
 - `reply` accepts a search file argument and `--replies` limit (default `3`).
 - `reply` requires `--personas <name>` and resolves persona data from `personas.json` or `.reddrop/personas.json`.
 - `reply` uses `ReplyGenerationService` for draft text and writes drafts into `conversation.reply` in `search_*.json`.
@@ -62,13 +65,14 @@
   - `POST /threads/{job}/{subreddit}/{thread_id}/reply` and `POST /threads/{job}/{subreddit}/{thread_id}/send` for per-thread actions
 - FastAPI also exposes job lifecycle and artifact browsing endpoints (`/jobs`, `/jobs/status`, `/jobs/{name}/start|stop|restart`, `/artifacts/search*`, `/artifacts/reply*`) for frontend usage.
 - Job start/restart actions spawn CLI `search` subprocesses; stop issues process termination and status is tracked in-memory.
+- Autonomous runtime jobs do not auto-send replies; send remains an explicit action.
 - CLI completion scripts (`bash`, `zsh`) resolve search-name candidates from configured job names and must work for both `reddrop` and `./reddrop`.
 - Discovery progress is emitted via standard info logs from CLI/services.
 - Discovery logs include output summaries for analysis intent/topics/keywords, discovered subreddits, generated queries, and candidate thread counts.
 - `backend/services/llm_service.py` uses OpenRouter (`OPENROUTER_*`) and falls back to deterministic demo responses when missing/unavailable.
 - Modules that log should use `logger = setup_logging(__name__)` for a shared formatter/level policy.
 - Frontend consumes API only; no business logic is implemented in UI components.
-- Jobs UI supports create + lifecycle controls (activate/deactivate/start/stop/delete); existing jobs are read-only in details view.
+- Jobs UI supports create + lifecycle controls (activate/deactivate/start/stop/delete) with explicit job type selection (`search`/`reply`) and source search-job linkage for reply jobs; existing jobs are read-only in details view.
 - Frontend threads/reply views are driven by `GET /threads` plus thread-level reply/send actions, rather than direct artifact file selection.
 - Table-based frontend views use shadcn-style toolbar + bordered table sections; create actions use modal dialogs while row details/editors open in right-side sheets.
 - Destructive frontend actions (job/persona deletion) use explicit confirmation dialogs before API calls are executed.

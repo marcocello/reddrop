@@ -1,7 +1,12 @@
+export type JobType = 'search' | 'reply'
+
 export type Job = {
   id: string
   name: string
+  job_type: JobType
+  source_job_id?: string | null
   topic: string
+  min_similarity_score: number
   active: boolean
   time_filter: string
   subreddit_limit: number
@@ -64,7 +69,10 @@ export type ThreadListResponse = {
 
 export type UpsertJobPayload = {
   name: string
+  job_type: JobType
+  source_job_id?: string | null
   topic: string
+  min_similarity_score: number
   active: boolean
   time_filter: string
   subreddit_limit: number

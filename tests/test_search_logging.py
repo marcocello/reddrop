@@ -127,3 +127,34 @@ def test_discover_relevant_threads_logs_steps_with_job_prefix(monkeypatch) -> No
 
     assert any(message.startswith("job-123 - step 1/5: Analyzing topic") for message in fake_logger.messages)
     assert any(message.startswith("job-123 - step 1/5 output: topic=") for message in fake_logger.messages)
+
+
+def test_discover_relevant_threads_logs_step_5_even_with_zero_candidates(monkeypatch) -> None:
+    fake_logger = _FakeLogger()
+    monkeypatch.setattr(reddit_service_module, "logger", fake_logger)
+
+    service = reddit_service_module.RedditService.__new__(reddit_service_module.RedditService)
+    service.reddit = object()
+    service.initialization_error = ""
+    service._raise_if_stopped = lambda should_stop: None
+    service._analyze_content = lambda content: {
+        "intent": "sharing",
+        "topics": ["sales automation"],
+        "semantic_keywords": ["meshify"],
+        "suggested_subreddits": ["startups"],
+    }
+    service._find_relevant_subreddits = lambda content_analysis, limit, stop_requested: [{"name": "startups"}]
+    service._generate_search_queries = lambda content_analysis: ["meshify crm"]
+    service._search_threads_directly = lambda **kwargs: []
+    service._llm_filter_and_rank_threads = lambda **kwargs: []
+
+    rows = service.discover_relevant_threads(
+        content="Meshify as an execution layer",
+        time_filter="week",
+        subreddit_limit=5,
+        threads_limit=10,
+        job_id="job-123",
+    )
+
+    assert rows == []
+    assert any(message.startswith("job-123 - step 5/5: Ranking 0 candidate thread(s).") for message in fake_logger.messages)

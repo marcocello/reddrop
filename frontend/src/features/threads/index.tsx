@@ -47,10 +47,10 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { reddropApi, type Job, type ThreadItem } from '@/lib/reddrop-api'
-import { AutoRefreshMenu } from '@/components/auto-refresh-menu'
 
 const ACTIONS_COLUMN_ID = 'actions'
 const JOB_COLUMN_ID = 'job'
+const AUTO_REFRESH_INTERVAL_MS = 5000
 
 const arrayFilterFn: FilterFn<ThreadItem> = (row, columnId, value) => {
   const selected = Array.isArray(value) ? (value as string[]) : []
@@ -116,7 +116,6 @@ export function ThreadsPage() {
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
   const [columnOrder, setColumnOrder] = useState<ColumnOrderState>([])
   const [draggingColumnId, setDraggingColumnId] = useState<string | null>(null)
-  const [autoRefreshSeconds, setAutoRefreshSeconds] = useState(0)
 
   const loadThreads = useCallback(async (): Promise<void> => {
     setLoading(true)
@@ -160,12 +159,11 @@ export function ThreadsPage() {
   }, [loadJobs, loadThreads])
 
   useEffect(() => {
-    if (autoRefreshSeconds <= 0) return
     const timer = window.setInterval(() => {
       void loadThreads()
-    }, autoRefreshSeconds * 1000)
+    }, AUTO_REFRESH_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [autoRefreshSeconds, loadThreads])
+  }, [loadThreads])
 
   useEffect(() => {
     setReplyInput(selectedThread?.reply ?? '')
@@ -460,10 +458,6 @@ export function ThreadsPage() {
     <>
       <Header fixed>
         <div className='ms-auto flex items-center gap-2'>
-          <AutoRefreshMenu
-            valueSeconds={autoRefreshSeconds}
-            onValueChange={setAutoRefreshSeconds}
-          />
           <Button
             variant='outline'
             size='icon'

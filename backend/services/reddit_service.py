@@ -134,12 +134,12 @@ class RedditService:
                 len(candidate_threads),
                 self._preview_values(candidate_ids, max_items=10),
             )
+            _log_info("step 5/5: Ranking %s candidate thread(s).", len(candidate_threads))
+            self._raise_if_stopped(should_stop)
             if not candidate_threads:
                 _log_info("No candidate threads found for this search.")
                 return []
 
-            _log_info("step 5/5: Ranking %s candidate thread(s).", len(candidate_threads))
-            self._raise_if_stopped(should_stop)
             return self._llm_filter_and_rank_threads(
                 content=content,
                 content_analysis=content_analysis,

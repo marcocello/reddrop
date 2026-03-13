@@ -107,3 +107,70 @@ def test_jobs_list_includes_summary_counters(tmp_path, monkeypatch) -> None:
         assert 'successful_runs' in item
         assert item['threads_found_total'] == 2
         assert item['threads_replied_total'] == 1
+
+
+def test_replying_jobs_require_source_search_job_and_persona(tmp_path, monkeypatch) -> None:
+    _setup_isolated_runtime(tmp_path, monkeypatch)
+    with TestClient(api_main.app) as client:
+        missing_source = client.post(
+            '/jobs',
+            json={
+                'name': 'reply-only',
+                'job_type': 'reply',
+                'personas': ['seller'],
+            },
+        )
+        assert missing_source.status_code == 400
+        assert 'source_job_id' in missing_source.json()['detail']
+
+        missing_persona = client.post(
+            '/jobs',
+            json={
+                'name': 'reply-only-2',
+                'job_type': 'reply',
+                'source_job_id': 'does-not-exist',
+                'personas': [],
+            },
+        )
+        assert missing_persona.status_code == 400
+        assert 'persona' in missing_persona.json()['detail'].lower()
+
+        search_job = client.post(
+            '/jobs',
+            json={
+                'name': 'search-only',
+                'job_type': 'search',
+                'topic': 'AI launch strategy',
+            },
+        )
+        assert search_job.status_code == 200
+        search_job_id = search_job.json()['id']
+
+        replying_job = client.post(
+            '/jobs',
+            json={
+                'name': 'reply-worker',
+                'job_type': 'reply',
+                'source_job_id': search_job_id,
+                'personas': ['seller'],
+            },
+        )
+        assert replying_job.status_code == 200
+        payload = replying_job.json()
+        assert payload['job_type'] == 'reply'
+        assert payload['source_job_id'] == search_job_id
+        assert payload['topic'] == ''
+
+        custom_threshold = client.post(
+            '/jobs',
+            json={
+                'name': 'reply-worker-custom-threshold',
+                'job_type': 'reply',
+                'source_job_id': search_job_id,
+                'personas': ['seller'],
+                'min_similarity_score': 0.72,
+            },
+        )
+        assert custom_threshold.status_code == 200
+        custom_payload = custom_threshold.json()
+        assert custom_payload['min_similarity_score'] == 0.72

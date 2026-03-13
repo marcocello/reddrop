@@ -58,6 +58,16 @@ def _positive_int(raw: str) -> int:
     return value
 
 
+def _similarity_score(raw: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Value must be a number between 0 and 1.") from exc
+    if value < 0 or value > 1:
+        raise argparse.ArgumentTypeError("Value must be between 0 and 1.")
+    return value
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="reddrop", description="Reddrop CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -69,6 +79,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add.add_argument("--subreddit-limit", type=int, default=DEFAULT_SUBREDDIT_LIMIT)
     add.add_argument("--threads-limit", type=int, default=DEFAULT_THREADS_LIMIT)
     add.add_argument("--replies-per-iteration", type=_positive_int, default=DEFAULT_REPLIES_PER_ITERATION)
+    add.add_argument("--min-similarity-score", type=_similarity_score, default=0.35)
     add.add_argument("--max-runtime-minutes", type=_positive_int, default=DEFAULT_MAX_RUNTIME_MINUTES)
     add.add_argument("--personas", nargs="*", default=[])
 
@@ -78,6 +89,7 @@ def _build_parser() -> argparse.ArgumentParser:
     reply = subparsers.add_parser("reply", help="Generate replies from a search artifact.")
     reply.add_argument("search_file")
     reply.add_argument("--replies", type=_positive_int, default=3)
+    reply.add_argument("--min-similarity", type=_similarity_score, default=0.35)
     reply.add_argument("--personas", required=True)
 
     send = subparsers.add_parser("send", help="Send unsent replies from a search artifact.")
