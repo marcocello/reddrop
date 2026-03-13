@@ -50,7 +50,7 @@ import { reddropApi, type Job, type ThreadItem } from '@/lib/reddrop-api'
 
 const ACTIONS_COLUMN_ID = 'actions'
 const JOB_COLUMN_ID = 'job'
-const AUTO_REFRESH_INTERVAL_MS = 5000
+const AUTO_REFRESH_INTERVAL_MS = 2000
 
 const arrayFilterFn: FilterFn<ThreadItem> = (row, columnId, value) => {
   const selected = Array.isArray(value) ? (value as string[]) : []
@@ -460,14 +460,14 @@ export function ThreadsPage() {
         <div className='ms-auto flex items-center gap-2'>
           <Button
             variant='outline'
-            size='icon'
-            className='size-8'
+            size='sm'
             onClick={() => void loadThreads()}
             disabled={loading}
             aria-label='Refresh threads'
             title='Refresh threads'
           >
-            <RefreshCw className='size-4' />
+            <RefreshCw className='size-4 animate-spin [animation-duration:2s]' />
+            Refresh
           </Button>
         </div>
       </Header>
