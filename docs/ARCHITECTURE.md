@@ -11,10 +11,9 @@
 - `backend/api/job_runtime.py`: in-memory job process manager for start/stop/restart status.
 - `backend/services/`: discovery, persistence, LLM, and persona access.
 - `backend/services/reddit_service.py`: Reddit discovery and posting integration.
-- `backend/services/linkedin_service.py`: LinkedIn headless discovery and posting integration.
+- `backend/services/linkedin_service.py`: LinkedIn headless discovery, posting integration, and interactive login bootstrap.
 - `backend/services/settings_store.py`: load/save `settings.yaml` runtime LLM settings (`openrouter`) and sync values into process env.
-- `backend/services/auth_store.py`: load/save auth catalog split by social under `.reddrop/auth/reddit/auths.json` and `.reddrop/auth/linkedin/auths.json`.
-- `app/linkedin_scraper.py`: Playwright-based LinkedIn login bootstrap command used by auth-triggered login flow.
+- `backend/services/auth_store.py`: load/save auth catalog split by social under `backend/.reddrop/auth/reddit/auths.json` and `backend/.reddrop/auth/linkedin/auths.json`.
 - `backend/config/log.py`: shared logging configuration and `setup_logging`.
 - `backend/models.py`: job/search data contracts.
 - `frontend/`: React + Vite dashboard derived from `satnaing/shadcn-admin`, trimmed to jobs/personas/threads/settings views.
@@ -31,11 +30,14 @@
 - `reply` and `send` return compact CLI summaries and do not print full artifact payloads.
 
 ## Data Contracts
-- Job config file: `.reddrop/jobs_config.json`.
-- Auth catalog files: `.reddrop/auth/reddit/auths.json` and `.reddrop/auth/linkedin/auths.json`.
-- Search artifacts: `.reddrop/runs/search_<job_id_prefix8>.json` (one file per job).
+- Job config file: `backend/.reddrop/jobs_config.json`.
+- Auth catalog files: `backend/.reddrop/auth/reddit/auths.json` and `backend/.reddrop/auth/linkedin/auths.json`.
+- Search artifacts: `backend/.reddrop/runs/search_<job_id_prefix8>.json` (one file per job).
 - Job `id` values are UUIDs generated automatically.
-- Job entries store `id`, `name`, `job_type` (`search` or `reply`), `social` (`reddit` or `linkedin`), `auth_id`, optional `source_job_id`, `topic`, `time_filter`, `subreddit_limit`, `threads_limit`, `replies_per_iteration`, `max_runtime_minutes`, and `personas`; `name` is a no-space identifier (`[A-Za-z0-9_-]+`).
+- Job entries store shared fields `id`, `name`, `job_type` (`search` or `reply`), `social` (`reddit` or `linkedin`), `auth_id`, and `max_runtime_minutes`.
+- Search jobs additionally store `topic`, `time_filter`, `subreddit_limit`, and `threads_limit`.
+- Reply jobs additionally store `source_job_id`, `replies_per_iteration`, `min_similarity_score`, and `personas`.
+- Job `name` is a no-space identifier (`[A-Za-z0-9_-]+`).
 - Search artifact payload includes `id` (job id), `created_at`, `updated_at`, and merged `conversations`.
 - Conversation rows include `reply` and `user_has_commented`, so search/reply/send state is unified in one file per job.
 
@@ -56,12 +58,12 @@
   - `search` jobs run search + rank only.
   - `reply` jobs run reply generation only, using artifacts from their linked `source_job_id` search job.
 - `reply` accepts a search file argument and `--replies` limit (default `3`).
-- `reply` requires `--personas <name>` and resolves persona data from `personas.json` or `.reddrop/personas.json`.
+- `reply` requires `--personas <name>` and resolves persona data from `personas.json` or `backend/.reddrop/personas.json`.
 - `reply` uses `ReplyGenerationService` for draft text and writes drafts into `conversation.reply` in `search_*.json`.
 - `reply` selection excludes conversations that already have a non-empty `reply`, applies a minimum similarity threshold (`semantic_similarity >= 0.35`), and reranks remaining entries by `semantic_similarity` descending before taking top `--replies`.
 - `search` persistence is handled by `SearchStorage` (`backend/services/search_storage.py`).
 - `SearchStorage` provides file locking (`flock`) + atomic replace writes for all search/reply/send updates.
-- `JobConfigStore` now also uses file locking (`flock`) + atomic replace writes for `.reddrop/jobs_config.json`.
+- `JobConfigStore` now also uses file locking (`flock`) + atomic replace writes for `backend/.reddrop/jobs_config.json`.
 - `ReplyGenerationService` extracts tone/style from thread title/body during `reply` and applies it to final reply generation.
 - Discovery (`search`) does not perform tone/style extraction.
 - `send` routes posting by job `social` (`RedditService.post_comment` or `LinkedinService.post_comment`) and updates `user_has_commented` in the same `search_*.json` artifact.
@@ -73,7 +75,12 @@
   - `PUT /jobs/{job}` exists but returns `405` because jobs are immutable after creation
   - `GET /personas`, `PUT /personas` for persona catalog management
   - `GET /auths`, `PUT /auths` for auth catalog management (`reddit`/`linkedin` auth objects)
-  - `POST /auths/{auth}/linkedin/login` to run the LinkedIn login bootstrap command (`python -m app.linkedin_scraper login ...`) using selected auth runtime fields
+    - `GET /auths` includes computed `status` (`ok`/`invalid`) per auth for UI health badges
+      - Reddit status validates live credentials through `praw` login (`user.me()`).
+      - LinkedIn status validates saved browser session by checking `li_at` cookie in profile cookie DB.
+    - `POST /auths/{auth}/validate` performs explicit provider-specific validation for a single auth object.
+    - `POST /auths/validate` performs explicit provider-specific validation for all auth objects.
+  - `POST /auths/{auth}/linkedin/login` to run LinkedIn login bootstrap directly through `LinkedinService.login_and_save_session(...)` using selected auth runtime fields
   - `GET /settings`, `PUT /settings` for runtime LLM/OpenRouter settings management only
   - `GET /threads` with JSON-artifact filters (`job_id`, `job_name`, `subreddit`, `min_similarity`, `only_open`, `has_reply`, paging), backed by an in-memory artifact cache keyed by run/job-config file snapshots
   - `POST /threads/{job}/{subreddit}/{thread_id}/reply` and `POST /threads/{job}/{subreddit}/{thread_id}/send` for per-thread actions; `{job}` accepts either search-job or linked reply-job references
@@ -100,8 +107,9 @@
 - Threads rows expose explicit search↔reply linkage metadata (`reply_job_id`, `reply_job_name`, `reply_personas`) so reply context is visible and deterministic.
 - Frontend includes a dedicated Personas page using the same table + modal-create + sheet-edit interaction model as Jobs, persisted via `/personas`.
 - Frontend includes a dedicated Auths page (table + modal create + sheet details) for Reddit/LinkedIn auth objects, persisted via `/auths`.
-- Auths create form order is `social` then `name`.
-- LinkedIn auth forms expose only social + name and login trigger; runtime fields (`headless`, `wait seconds`, `user data dir`) are API-managed defaults.
+- Auths create form exposes `social` first, then platform credentials; `name` is not user-editable.
+- LinkedIn auth forms expose only social selector and login trigger; runtime fields (`headless`, `wait seconds`, `user data dir`) are API-managed defaults.
+- Auths table shows short ID, username, social, and status badges; summary column is removed.
 - Frontend includes a dedicated Settings page for LLM/OpenRouter fields only, persisted via `/settings`.
 - Frontend does not expose a dedicated Replies page; reply drafting/sending is handled within Threads workflows.
 - Jobs and Threads headers use a split refresh control: left action triggers manual refresh, right side opens auto-refresh dropdown (`off`, `30s`, `1m`, `5m`, `15m`) with default `30s`.

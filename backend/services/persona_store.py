@@ -5,10 +5,12 @@ from pathlib import Path
 
 from ..models import PersonaProfile
 
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
 
 class PersonaStore:
     def __init__(self, candidates: list[str | Path] | None = None) -> None:
-        default_candidates: list[str | Path] = [".reddrop/personas.json"]
+        default_candidates: list[str | Path] = [_BACKEND_ROOT / ".reddrop/personas.json"]
         self._candidates = [Path(item) for item in (candidates or default_candidates)]
 
     def resolve_file(self) -> Path | None:
@@ -24,7 +26,7 @@ class PersonaStore:
 
         path = self.resolve_file()
         if path is None:
-            raise FileNotFoundError("Personas file not found: .reddrop/personas.json")
+            raise FileNotFoundError("Personas file not found: backend/.reddrop/personas.json")
         for persona in self._personas_from_path(path):
             if persona.name.strip().lower() == target:
                 return persona

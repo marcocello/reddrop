@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { faLinkedinIn, faRedditAlien } from '@fortawesome/free-brands-svg-icons'
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   type ColumnDef,
   type ColumnOrderState,
@@ -15,7 +18,7 @@ import {
   useReactTable,
   type VisibilityState,
 } from '@tanstack/react-table'
-import { ChevronDown, Copy, Eye, MoreHorizontal, Play, Power, PowerOff, RefreshCw, Square, Trash2 } from 'lucide-react'
+import { ChevronDown, Copy, Eye, MessageSquareReply, MoreHorizontal, Play, Power, PowerOff, RefreshCw, Search, Square, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { DataTableColumnHeader, DataTablePagination, DataTableToolbar } from '@/components/data-table'
 import { Header } from '@/components/layout/header'
@@ -142,8 +145,16 @@ function formatJobType(value: JobType): string {
   return value === 'reply' ? 'Reply' : 'Search'
 }
 
+function jobTypeIcon(value: JobType) {
+  return value === 'reply' ? MessageSquareReply : Search
+}
+
 function formatSocial(value: SocialPlatform): string {
-  return value === 'linkedin' ? 'linkedin' : 'reddit'
+  return value === 'linkedin' ? 'LinkedIn' : 'Reddit'
+}
+
+function socialIcon(platform: SocialPlatform): IconDefinition {
+  return platform === 'linkedin' ? faLinkedinIn : faRedditAlien
 }
 
 function jobTypeBadgeClass(_value: JobType): string {
@@ -152,7 +163,7 @@ function jobTypeBadgeClass(_value: JobType): string {
 
 function displayJobTopic(job: Pick<Job, 'job_type' | 'topic'>): string {
   if (job.job_type === 'reply') return 'N/A'
-  const normalized = job.topic.trim()
+  const normalized = (job.topic ?? '').trim()
   return normalized || '-'
 }
 
@@ -160,6 +171,16 @@ function shortId(value: string): string {
   const normalized = value.trim()
   if (!normalized) return '-'
   return normalized.slice(0, 8)
+}
+
+function authDisplayName(auth: AuthProfile): string {
+  if (auth.social === 'reddit') {
+    const username = auth.reddit_username.trim()
+    if (username) return username
+  }
+  const fallbackName = auth.name?.trim()
+  if (fallbackName) return fallbackName
+  return shortId(auth.id)
 }
 
 function buildDuplicateJobName(baseName: string, existingNames: Set<string>): string {
@@ -351,7 +372,7 @@ export function JobsPage() {
 
   const authNameById = useMemo(() => {
     const map = new Map<string, string>()
-    authOptions.forEach((auth) => map.set(auth.id, auth.name))
+    authOptions.forEach((auth) => map.set(auth.id, authDisplayName(auth)))
     return map
   }, [authOptions])
 
@@ -368,7 +389,10 @@ export function JobsPage() {
   }, [])
 
   const createJob = useCallback(async (): Promise<void> => {
-    if (form.job_type === 'search' && !form.topic.trim()) {
+    const topic = (form.topic ?? '').trim()
+    const replyPersonas = form.personas ?? []
+    const primaryReplyPersona = replyPersonas[0] ?? ''
+    if (form.job_type === 'search' && !topic) {
       toast.error('Topic is required for search jobs')
       return
     }
@@ -380,7 +404,7 @@ export function JobsPage() {
       toast.error('Source search job is required for reply jobs')
       return
     }
-    if (form.job_type === 'reply' && form.personas.length === 0) {
+    if (form.job_type === 'reply' && replyPersonas.length === 0) {
       toast.error('At least one persona is required for reply jobs')
       return
     }
@@ -400,14 +424,32 @@ export function JobsPage() {
       return
     }
 
-    const payload: UpsertJobPayload = {
-      ...form,
-      name: normalizedName,
-      social: form.job_type === 'reply' ? (sourceSocial ?? form.social) : form.social,
-      auth_id: form.job_type === 'reply' ? (sourceAuthId ?? form.auth_id ?? null) : form.auth_id,
-      topic: form.job_type === 'search' ? form.topic : '',
-      source_job_id: form.job_type === 'reply' ? form.source_job_id : null,
-    }
+    const payload: UpsertJobPayload =
+      form.job_type === 'reply'
+        ? {
+            name: normalizedName,
+            job_type: 'reply',
+            social: sourceSocial ?? form.social,
+            auth_id: sourceAuthId ?? form.auth_id ?? null,
+            source_job_id: form.source_job_id,
+            min_similarity_score: form.min_similarity_score,
+            replies_per_iteration: form.replies_per_iteration,
+            max_runtime_minutes: form.max_runtime_minutes,
+            personas: [primaryReplyPersona],
+            active: form.active,
+          }
+        : {
+            name: normalizedName,
+            job_type: 'search',
+            social: form.social,
+            auth_id: form.auth_id,
+            topic,
+            time_filter: form.time_filter,
+            subreddit_limit: form.subreddit_limit,
+            threads_limit: form.threads_limit,
+            max_runtime_minutes: form.max_runtime_minutes,
+            active: form.active,
+          }
 
     setSaving(true)
     try {
@@ -491,15 +533,18 @@ export function JobsPage() {
       social: job.social,
       auth_id: job.auth_id ?? null,
       source_job_id: job.source_job_id ?? null,
-      topic: job.job_type === 'reply' ? '' : job.topic,
-      min_similarity_score: job.min_similarity_score,
+      topic: job.job_type === 'reply' ? '' : (job.topic ?? ''),
+      min_similarity_score: job.min_similarity_score ?? 0.35,
       active: job.active,
-      time_filter: job.time_filter,
-      subreddit_limit: job.subreddit_limit,
-      threads_limit: job.threads_limit,
-      replies_per_iteration: job.replies_per_iteration,
+      time_filter: job.time_filter ?? 'week',
+      subreddit_limit: job.subreddit_limit ?? 5,
+      threads_limit: job.threads_limit ?? 10,
+      replies_per_iteration: job.replies_per_iteration ?? 3,
       max_runtime_minutes: normalizeRunFrequencyMinutes(job.max_runtime_minutes),
-      personas: job.job_type === 'reply' && job.personas.length > 0 ? [job.personas[0]] : [...job.personas],
+      personas:
+        job.job_type === 'reply' && (job.personas ?? []).length > 0
+          ? [job.personas![0]]
+          : [...(job.personas ?? [])],
     })
     setCreateDialogOpen(true)
   }, [jobs, sourceSearchNameById])
@@ -536,11 +581,17 @@ export function JobsPage() {
         accessorFn: (row) => row.job_type,
         filterFn: arrayFilterFn,
         header: ({ column }) => <DataTableColumnHeader column={column} title='Type' />,
-        cell: ({ row }) => (
-          <Badge className={jobTypeBadgeClass(row.original.job_type)}>
-            {formatJobType(row.original.job_type)}
-          </Badge>
-        ),
+        cell: ({ row }) => {
+          const JobTypeIcon = jobTypeIcon(row.original.job_type)
+          return (
+            <Badge className={jobTypeBadgeClass(row.original.job_type)}>
+              <span className='inline-flex items-center gap-1.5'>
+                <JobTypeIcon className='size-3.5' />
+                {formatJobType(row.original.job_type)}
+              </span>
+            </Badge>
+          )
+        },
       },
       {
         id: 'social',
@@ -549,7 +600,10 @@ export function JobsPage() {
         header: ({ column }) => <DataTableColumnHeader column={column} title='Social' />,
         cell: ({ row }) => (
           <Badge className='bg-muted text-muted-foreground'>
-            {formatSocial(row.original.social)}
+            <span className='inline-flex items-center gap-1.5'>
+              <FontAwesomeIcon icon={socialIcon(row.original.social)} className='size-3.5' />
+              {formatSocial(row.original.social)}
+            </span>
           </Badge>
         ),
       },
@@ -794,6 +848,7 @@ export function JobsPage() {
   const selectedDeactivateKey = selectedJob ? `${selectedJob.id}:deactivate` : ''
   const selectedDeleteKey = selectedJob ? `${selectedJob.id}:delete` : ''
   const selectedLogs = selectedJob?.runtime?.logs ?? []
+  const SelectedJobTypeIcon = selectedJob ? jobTypeIcon(selectedJob.job_type) : null
 
   const renderJobFormFields = (prefix: string) => {
     const availableAuthOptions = authOptions.filter((auth) => auth.social === form.social)
@@ -818,7 +873,7 @@ export function JobsPage() {
               job_type: nextType,
               source_job_id: nextType === 'reply' ? prev.source_job_id : null,
               topic: nextType === 'reply' ? '' : prev.topic,
-              personas: nextType === 'reply' ? (prev.personas.length > 0 ? [prev.personas[0]] : []) : [],
+              personas: nextType === 'reply' ? ((prev.personas ?? []).length > 0 ? [prev.personas![0]] : []) : [],
               auth_id: nextType === 'reply' ? sourceAuthId : prev.auth_id,
               name: nextType === 'reply' ? extractReplyPrefix(prev.name, sourceName) : prev.name,
             }))
@@ -828,8 +883,18 @@ export function JobsPage() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value='search'>Search</SelectItem>
-            <SelectItem value='reply'>Reply</SelectItem>
+            <SelectItem value='search'>
+              <span className='inline-flex items-center gap-2'>
+                <Search className='size-3.5' />
+                Search
+              </span>
+            </SelectItem>
+            <SelectItem value='reply'>
+              <span className='inline-flex items-center gap-2'>
+                <MessageSquareReply className='size-3.5' />
+                Reply
+              </span>
+            </SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -852,8 +917,18 @@ export function JobsPage() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value='reddit'>reddit</SelectItem>
-            <SelectItem value='linkedin'>linkedin</SelectItem>
+            <SelectItem value='reddit'>
+              <span className='inline-flex items-center gap-2'>
+                <FontAwesomeIcon icon={socialIcon('reddit')} className='size-3.5' />
+                Reddit
+              </span>
+            </SelectItem>
+            <SelectItem value='linkedin'>
+              <span className='inline-flex items-center gap-2'>
+                <FontAwesomeIcon icon={socialIcon('linkedin')} className='size-3.5' />
+                LinkedIn
+              </span>
+            </SelectItem>
           </SelectContent>
         </Select>
         {form.job_type === 'reply' && form.source_job_id ? (
@@ -1030,7 +1105,7 @@ export function JobsPage() {
             <Label htmlFor={`${prefix}-reply-persona`}>Persona</Label>
             {personaOptions.length > 0 ? (
               <Select
-                value={form.personas[0] ?? undefined}
+                value={form.personas?.[0] ?? undefined}
                 onValueChange={(value) =>
                   setForm((prev) => ({
                     ...prev,
@@ -1378,8 +1453,20 @@ export function JobsPage() {
                 <div className='grid gap-3 text-sm'>
                   <p><span className='font-medium'>ID:</span> <span className='font-mono'>{selectedJob.id}</span></p>
                   <p><span className='font-medium'>Name:</span> {selectedJob.name}</p>
-                  <p><span className='font-medium'>Type:</span> {formatJobType(selectedJob.job_type)}</p>
-                  <p><span className='font-medium'>Social:</span> {formatSocial(selectedJob.social)}</p>
+                  <p>
+                    <span className='font-medium'>Type:</span>{' '}
+                    <span className='inline-flex items-center gap-1.5'>
+                      {SelectedJobTypeIcon ? <SelectedJobTypeIcon className='size-3.5' /> : null}
+                      {formatJobType(selectedJob.job_type)}
+                    </span>
+                  </p>
+                  <p>
+                    <span className='font-medium'>Social:</span>{' '}
+                    <span className='inline-flex items-center gap-1.5'>
+                      <FontAwesomeIcon icon={socialIcon(selectedJob.social)} className='size-3.5' />
+                      {formatSocial(selectedJob.social)}
+                    </span>
+                  </p>
                   <p>
                     <span className='font-medium'>Auth:</span>{' '}
                     {selectedJob.auth_id ? (authNameById.get(selectedJob.auth_id) ?? selectedJob.auth_id) : '-'}
@@ -1388,22 +1475,22 @@ export function JobsPage() {
                     <span className='font-medium'>Source search job:</span>{' '}
                     {selectedJob.source_job_id ? (sourceSearchNameById.get(selectedJob.source_job_id) ?? selectedJob.source_job_id) : '-'}
                   </p>
-                  <p><span className='font-medium'>Topic:</span> {selectedJob.job_type === 'reply' ? 'N/A' : selectedJob.topic}</p>
+                  <p><span className='font-medium'>Topic:</span> {selectedJob.job_type === 'reply' ? 'N/A' : (selectedJob.topic ?? '-')}</p>
                   <p><span className='font-medium'>Active:</span> {selectedJob.active ? 'Yes' : 'No'}</p>
                   <p><span className='font-medium'>Current status:</span> {formatStatusLabel(selectedJob.runtime?.status)}</p>
                   <p><span className='font-medium'>Last run status:</span> {formatStatusLabel(selectedJob.last_run_status ?? 'never')}</p>
                   <p><span className='font-medium'>Successful runs:</span> {selectedJob.successful_runs ?? 0}</p>
                   <p><span className='font-medium'>Threads found:</span> {selectedJob.threads_found_total ?? 0}</p>
                   <p><span className='font-medium'>Threads replied:</span> {selectedJob.threads_replied_total ?? 0}</p>
-                  <p><span className='font-medium'>Time filter:</span> {selectedJob.time_filter}</p>
-                  <p><span className='font-medium'>Subreddit limit:</span> {selectedJob.subreddit_limit}</p>
-                  <p><span className='font-medium'>Threads limit:</span> {selectedJob.threads_limit}</p>
+                  <p><span className='font-medium'>Time filter:</span> {selectedJob.job_type === 'search' ? selectedJob.time_filter : 'N/A'}</p>
+                  <p><span className='font-medium'>Subreddit limit:</span> {selectedJob.job_type === 'search' ? selectedJob.subreddit_limit : 'N/A'}</p>
+                  <p><span className='font-medium'>Threads limit:</span> {selectedJob.job_type === 'search' ? selectedJob.threads_limit : 'N/A'}</p>
                   {selectedJob.job_type === 'reply' ? (
                     <p><span className='font-medium'>Replies per iteration:</span> {selectedJob.replies_per_iteration}</p>
                   ) : null}
                   <p><span className='font-medium'>Minimum similarity score:</span> {selectedJob.job_type === 'reply' ? selectedJob.min_similarity_score : '-'}</p>
                   <p><span className='font-medium'>Run frequency:</span> {formatRunFrequency(selectedJob.max_runtime_minutes)}</p>
-                  <p><span className='font-medium'>Personas:</span> {selectedJob.personas.length > 0 ? selectedJob.personas.join(', ') : '-'}</p>
+                  <p><span className='font-medium'>Personas:</span> {(selectedJob.personas ?? []).length > 0 ? selectedJob.personas?.join(', ') : '-'}</p>
                 </div>
               ) : null}
               <div className='space-y-2'>

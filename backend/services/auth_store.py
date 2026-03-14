@@ -6,6 +6,8 @@ from typing import Any
 
 from ..models import AuthProfile
 
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
 
 class AuthStore:
     def __init__(
@@ -13,12 +15,12 @@ class AuthStore:
         base_dir: str | Path | None = None,
         legacy_candidates: list[str | Path] | None = None,
     ) -> None:
-        self._base_dir = Path(base_dir) if base_dir is not None else Path(".reddrop/auth")
+        self._base_dir = Path(base_dir) if base_dir is not None else (_BACKEND_ROOT / ".reddrop/auth")
         self._platform_files: dict[str, Path] = {
             "reddit": self._base_dir / "reddit" / "auths.json",
             "linkedin": self._base_dir / "linkedin" / "auths.json",
         }
-        default_legacy: list[str | Path] = [".reddrop/auths.json"]
+        default_legacy: list[str | Path] = [_BACKEND_ROOT / ".reddrop/auths.json"]
         self._legacy_candidates = [Path(item) for item in (legacy_candidates or default_legacy)]
 
     def resolve_file(self) -> Path | None:
@@ -88,14 +90,14 @@ class AuthStore:
         if destination is not None:
             target = Path(destination)
             target.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"auths": [item.model_dump(mode="json") for item in auths]}
+            payload = {"auths": [item.model_dump(mode="json", exclude={"status"}) for item in auths]}
             target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
             return target
 
         grouped: dict[str, list[dict[str, Any]]] = {"reddit": [], "linkedin": []}
         for item in auths:
             social = "linkedin" if item.social == "linkedin" else "reddit"
-            grouped[social].append(item.model_dump(mode="json"))
+            grouped[social].append(item.model_dump(mode="json", exclude={"status"}))
 
         for social, path in self._platform_files.items():
             path.parent.mkdir(parents=True, exist_ok=True)

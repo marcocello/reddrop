@@ -25,15 +25,15 @@ def handle(
         social=getattr(args, "social", "reddit"),
         auth_id=getattr(args, "auth_id", None),
         source_job_id=getattr(args, "source_job_id", None),
-        topic=args.topic,
-        min_similarity_score=getattr(args, "min_similarity_score", 0.35),
+        topic=getattr(args, "topic", None),
+        min_similarity_score=getattr(args, "min_similarity_score", None),
         active=bool(getattr(args, "active", False)),
-        time_filter=args.time_filter,
-        subreddit_limit=args.subreddit_limit,
-        threads_limit=args.threads_limit,
-        replies_per_iteration=getattr(args, "replies_per_iteration", 3),
+        time_filter=getattr(args, "time_filter", None),
+        subreddit_limit=getattr(args, "subreddit_limit", None),
+        threads_limit=getattr(args, "threads_limit", None),
+        replies_per_iteration=getattr(args, "replies_per_iteration", None),
         max_runtime_minutes=getattr(args, "max_runtime_minutes", 1440),
-        personas=getattr(args, "personas", []),
+        personas=getattr(args, "personas", None),
     )
-    emit(job.model_dump(mode="json"))
+    emit(job.model_dump(mode="json", exclude_none=True))
     return 0

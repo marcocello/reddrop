@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
 from fastapi.testclient import TestClient
 from apscheduler.schedulers import SchedulerNotRunningError
@@ -208,7 +209,10 @@ def test_replying_jobs_require_source_search_job_and_persona(tmp_path, monkeypat
         assert payload['job_type'] == 'reply'
         assert payload['source_job_id'] == search_job_id
         assert payload['auth_id'] == 'reddit-main'
-        assert payload['topic'] == ''
+        assert 'topic' not in payload
+        assert 'time_filter' not in payload
+        assert 'subreddit_limit' not in payload
+        assert 'threads_limit' not in payload
 
         custom_threshold = client.post(
             '/jobs',
@@ -223,3 +227,89 @@ def test_replying_jobs_require_source_search_job_and_persona(tmp_path, monkeypat
         assert custom_threshold.status_code == 200
         custom_payload = custom_threshold.json()
         assert custom_payload['min_similarity_score'] == 0.72
+
+
+def test_job_payloads_only_include_fields_for_their_type(tmp_path, monkeypatch) -> None:
+    _home, _runs, jobs_config = _setup_isolated_runtime(tmp_path, monkeypatch)
+    with TestClient(api_main.app) as client:
+        auths = client.put(
+            '/auths',
+            json={
+                'auths': [
+                    {
+                        'id': 'reddit-main',
+                        'name': 'Reddit Main',
+                        'social': 'reddit',
+                        'reddit_client_id': 'id',
+                        'reddit_client_secret': 'secret',
+                    }
+                ]
+            },
+        )
+        assert auths.status_code == 200
+
+        search_created = client.post(
+            '/jobs',
+            json={
+                'name': 'search-only-split',
+                'job_type': 'search',
+                'topic': 'AI launch strategy',
+                'auth_id': 'reddit-main',
+            },
+        )
+        assert search_created.status_code == 200
+        search_payload = search_created.json()
+        assert 'topic' in search_payload
+        assert 'time_filter' in search_payload
+        assert 'subreddit_limit' in search_payload
+        assert 'threads_limit' in search_payload
+        assert 'min_similarity_score' not in search_payload
+        assert 'replies_per_iteration' not in search_payload
+        assert 'personas' not in search_payload
+
+        reply_created = client.post(
+            '/jobs',
+            json={
+                'name': 'reply-only-split',
+                'job_type': 'reply',
+                'source_job_id': search_payload['id'],
+                'personas': ['seller'],
+                'min_similarity_score': 0.55,
+                'replies_per_iteration': 4,
+            },
+        )
+        assert reply_created.status_code == 200
+        reply_payload = reply_created.json()
+        assert 'min_similarity_score' in reply_payload
+        assert 'replies_per_iteration' in reply_payload
+        assert 'personas' in reply_payload
+        assert 'topic' not in reply_payload
+        assert 'time_filter' not in reply_payload
+        assert 'subreddit_limit' not in reply_payload
+        assert 'threads_limit' not in reply_payload
+
+    persisted = json.loads(jobs_config.read_text(encoding='utf-8'))
+    assert isinstance(persisted, dict)
+    jobs = persisted.get('jobs')
+    assert isinstance(jobs, list)
+    by_name = {str(item.get('name')): item for item in jobs if isinstance(item, dict)}
+
+    search_record = by_name['search-only-split']
+    assert 'topic' in search_record
+    assert 'time_filter' in search_record
+    assert 'subreddit_limit' in search_record
+    assert 'threads_limit' in search_record
+    assert 'source_job_id' not in search_record
+    assert 'min_similarity_score' not in search_record
+    assert 'replies_per_iteration' not in search_record
+    assert 'personas' not in search_record
+
+    reply_record = by_name['reply-only-split']
+    assert 'source_job_id' in reply_record
+    assert 'min_similarity_score' in reply_record
+    assert 'replies_per_iteration' in reply_record
+    assert 'personas' in reply_record
+    assert 'topic' not in reply_record
+    assert 'time_filter' not in reply_record
+    assert 'subreddit_limit' not in reply_record
+    assert 'threads_limit' not in reply_record

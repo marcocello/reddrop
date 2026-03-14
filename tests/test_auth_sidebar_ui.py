@@ -25,7 +25,7 @@ def test_auth_main_vertical_spacing_matches_personas_layout_pattern() -> None:
 
     assert "<Main className='flex flex-1 flex-col gap-4 sm:gap-6'>" in personas_source
     assert "<Main className='flex flex-1 flex-col gap-4 sm:gap-6'>" in auths_source
-    assert "searchPlaceholder='Search by auth id, name, social...'" in auths_source
+    assert "searchPlaceholder='Search by auth id, username, social or status...'" in auths_source
     assert "<div className='space-y-4'>\n          <DataTableToolbar" not in auths_source
 
 

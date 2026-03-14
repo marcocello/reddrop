@@ -5,7 +5,7 @@ def test_backend_job_model_has_type_and_source_link() -> None:
     source = Path("backend/models.py").read_text(encoding="utf-8")
     assert 'job_type: Literal["search", "reply"] = "search"' in source
     assert "source_job_id: str | None = None" in source
-    assert "min_similarity_score: float = 0.35" in source
+    assert "min_similarity_score: float | None = None" in source
 
 
 def test_jobs_ui_has_type_and_source_controls() -> None:
@@ -33,10 +33,13 @@ def test_jobs_ui_has_type_and_source_controls() -> None:
     assert "SelectItem value='1440'>Every 24 hours</SelectItem>" in source
 
 
-def test_reply_jobs_store_empty_topic() -> None:
+def test_reply_jobs_do_not_persist_search_only_fields() -> None:
     source = Path("backend/api/main.py").read_text(encoding="utf-8")
-    assert 'topic_value = request.topic.strip() if request.job_type == "search" else ""' in source
-    assert "min_similarity_score=request.min_similarity_score" in source
+    assert "topic_value: str | None = None" in source
+    assert "time_filter_value: str | None = None" in source
+    assert "subreddit_limit_value: int | None = None" in source
+    assert "threads_limit_value: int | None = None" in source
+    assert "min_similarity_score=min_similarity_score_value" in source
 
 
 def test_reddit_discovery_still_logs_step_5_for_empty_candidates() -> None:

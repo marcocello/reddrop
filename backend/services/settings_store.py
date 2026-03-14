@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
 
 class SettingsStore:
     OPENROUTER_KEYS = {
@@ -23,7 +25,7 @@ class SettingsStore:
         "OPENROUTER_TIMEOUT_SECONDS": "20",
     }
 
-    def __init__(self, settings_path: str | Path = ".reddrop/settings.yaml") -> None:
+    def __init__(self, settings_path: str | Path = _BACKEND_ROOT / ".reddrop/settings.yaml") -> None:
         self.settings_path = Path(settings_path)
 
     def load(self) -> dict[str, Any]:

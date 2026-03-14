@@ -21,8 +21,8 @@ from .commands import reply as reply_command
 from .commands import search as search_command
 from .commands import send as send_command
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_HOME = _REPO_ROOT / ".reddrop"
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_HOME = _BACKEND_ROOT / ".reddrop"
 DEFAULT_JOBS_CONFIG = DEFAULT_HOME / "jobs_config.json"
 DEFAULT_RUNS_DIR = DEFAULT_HOME / "runs"
 DEFAULT_TIME_FILTER = "week"
@@ -73,7 +73,7 @@ def _resolve_social(raw: object) -> str:
 def _resolve_linkedin_user_data_dir(raw_dir: str) -> str:
     raw = (raw_dir or "").strip() or ".reddrop/auth/linkedin"
     candidate = Path(raw).expanduser()
-    resolved = candidate if candidate.is_absolute() else (_REPO_ROOT / candidate)
+    resolved = candidate if candidate.is_absolute() else (_BACKEND_ROOT / candidate)
     try:
         resolved = resolved.resolve()
     except Exception:
@@ -85,7 +85,7 @@ def _resolve_linkedin_user_data_dir(raw_dir: str) -> str:
             relative_tail = resolved.relative_to(home_reddrop)
         except Exception:
             relative_tail = Path("auth/linkedin")
-        resolved = (_REPO_ROOT / ".reddrop" / relative_tail).resolve()
+        resolved = (_BACKEND_ROOT / ".reddrop" / relative_tail).resolve()
     return str(resolved)
 
 
@@ -264,6 +264,11 @@ def main(argv: list[str] | None = None) -> int:
                 return _error("--topic is required for search jobs.")
             if not str(args.auth_id or "").strip():
                 return _error("--auth-id is required for search jobs.")
+            args.topic = str(args.topic or "").strip()
+            args.source_job_id = None
+            args.personas = None
+            args.min_similarity_score = None
+            args.replies_per_iteration = None
         if args.job_type == "reply":
             if not str(args.source_job_id or "").strip():
                 return _error("--source-job-id is required for reply jobs.")
@@ -278,7 +283,20 @@ def main(argv: list[str] | None = None) -> int:
                 return _error(f"Source search job has no auth_id configured: {source.name}")
             args.social = source.social
             args.auth_id = source.auth_id
-        args.topic = str(args.topic or "").strip()
+            args.topic = None
+            args.time_filter = None
+            args.subreddit_limit = None
+            args.threads_limit = None
+            args.min_similarity_score = (
+                float(args.min_similarity_score)
+                if getattr(args, "min_similarity_score", None) is not None
+                else DEFAULT_MIN_SIMILARITY_SCORE
+            )
+            args.replies_per_iteration = (
+                int(args.replies_per_iteration)
+                if getattr(args, "replies_per_iteration", None) is not None
+                else DEFAULT_REPLIES_PER_ITERATION
+            )
         return add_command.handle(
             args,
             store,

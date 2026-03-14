@@ -32,6 +32,15 @@ def test_job_type_badge_uses_grey_style() -> None:
     assert "bg-muted text-muted-foreground" in source
 
 
+def test_job_type_uses_icons_in_table_select_and_sheet() -> None:
+    source = Path("frontend/src/features/jobs/index.tsx").read_text(encoding="utf-8")
+    assert "function jobTypeIcon(value: JobType) {" in source
+    assert "return value === 'reply' ? MessageSquareReply : Search" in source
+    assert "<Search className='size-3.5' />" in source
+    assert "<MessageSquareReply className='size-3.5' />" in source
+    assert "<span className='inline-flex items-center gap-1.5'>" in source
+
+
 def test_reply_form_uses_dropdown_for_persona_selection() -> None:
     source = Path("frontend/src/features/jobs/index.tsx").read_text(encoding="utf-8")
     assert "Label htmlFor={`${prefix}-reply-persona`}>Persona</Label>" in source
@@ -76,7 +85,7 @@ def test_reply_jobs_show_na_topic_in_table_and_sheet() -> None:
     assert "function displayJobTopic(job: Pick<Job, 'job_type' | 'topic'>): string {" in source
     assert "if (job.job_type === 'reply') return 'N/A'" in source
     assert "const topicLabel = displayJobTopic(row.original)" in source
-    assert "selectedJob.job_type === 'reply' ? 'N/A' : selectedJob.topic" in source
+    assert "selectedJob.job_type === 'reply' ? 'N/A' : (selectedJob.topic ?? '-')" in source
 
 
 def test_search_form_hides_replies_per_iteration_field() -> None:

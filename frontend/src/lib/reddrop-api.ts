@@ -8,15 +8,15 @@ export type Job = {
   social: SocialPlatform
   auth_id?: string | null
   source_job_id?: string | null
-  topic: string
-  min_similarity_score: number
+  topic?: string
+  min_similarity_score?: number
   active: boolean
-  time_filter: string
-  subreddit_limit: number
-  threads_limit: number
-  replies_per_iteration: number
+  time_filter?: string
+  subreddit_limit?: number
+  threads_limit?: number
+  replies_per_iteration?: number
   max_runtime_minutes: number
-  personas: string[]
+  personas?: string[]
   last_run_status?: string
   successful_runs?: number
   threads_found_total?: number
@@ -84,15 +84,15 @@ export type UpsertJobPayload = {
   social: SocialPlatform
   auth_id?: string | null
   source_job_id?: string | null
-  topic: string
-  min_similarity_score: number
+  topic?: string
+  min_similarity_score?: number
   active: boolean
-  time_filter: string
-  subreddit_limit: number
-  threads_limit: number
-  replies_per_iteration: number
+  time_filter?: string
+  subreddit_limit?: number
+  threads_limit?: number
+  replies_per_iteration?: number
   max_runtime_minutes: number
-  personas: string[]
+  personas?: string[]
 }
 
 export type PersonaProfile = {
@@ -114,6 +114,7 @@ export type AuthProfile = {
   id: string
   name: string
   social: SocialPlatform
+  status?: 'ok' | 'invalid'
   reddit_client_id: string
   reddit_client_secret: string
   reddit_user_agent: string
@@ -131,6 +132,16 @@ export type AuthsResponse = {
   source?: string | null
 }
 
+export type AuthValidationResult = {
+  auth_id: string
+  social: SocialPlatform
+  status: 'ok' | 'invalid'
+}
+
+export type AuthValidationResultsResponse = {
+  results: AuthValidationResult[]
+}
+
 export type UpsertAuthsPayload = {
   auths: AuthProfile[]
 }
@@ -145,10 +156,10 @@ export type OpenRouterSettings = {
 }
 
 export type LinkedinLoginResponse = {
-  status: 'ok'
-  command: string[]
-  stdout: string
-  stderr: string
+  status: 'session_saved'
+  auth_id?: string
+  user_data_dir: string
+  login_url: string
 }
 
 export type SettingsPayload = {
@@ -256,6 +267,14 @@ export const reddropApi = {
     request<AuthsResponse>('/auths', {
       method: 'PUT',
       body: JSON.stringify(payload),
+    }),
+  validateAuth: (authRef: string) =>
+    request<AuthValidationResult>(`/auths/${encodeURIComponent(authRef)}/validate`, {
+      method: 'POST',
+    }),
+  validateAuths: () =>
+    request<AuthValidationResultsResponse>('/auths/validate', {
+      method: 'POST',
     }),
   runLinkedinAuthLogin: (authRef: string) =>
     request<LinkedinLoginResponse>(`/auths/${encodeURIComponent(authRef)}/linkedin/login`, {

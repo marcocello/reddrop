@@ -21,6 +21,35 @@ def _never_stop() -> bool:
 class RedditService:
     """Service for Reddit discovery and posting."""
 
+    @staticmethod
+    def validate_credentials(
+        *,
+        client_id: str,
+        client_secret: str,
+        user_agent: str,
+        username: str,
+        password: str,
+    ) -> bool:
+        if not client_id.strip() or not client_secret.strip():
+            return False
+        if not username.strip() or not password.strip():
+            return False
+        try:
+            reddit = praw.Reddit(
+                client_id=client_id.strip(),
+                client_secret=client_secret.strip(),
+                user_agent=user_agent.strip() or "Reddrop:v1.0",
+                username=username.strip(),
+                password=password.strip(),
+                check_for_async=False,
+            )
+            me = reddit.user.me()
+            if me is None:
+                return False
+            return str(me).strip().lower() == username.strip().lower()
+        except Exception:
+            return False
+
     def __init__(self) -> None:
         self.initialization_error = ""
         try:

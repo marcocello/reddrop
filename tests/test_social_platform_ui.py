@@ -5,8 +5,16 @@ def test_jobs_page_has_social_selector_and_visibility() -> None:
     source = Path('frontend/src/features/jobs/index.tsx').read_text(encoding='utf-8')
     assert "Label htmlFor={`${prefix}-job-social`}>Social</Label>" in source
     assert "SelectTrigger id={`${prefix}-job-social`}" in source
-    assert "SelectItem value='reddit'>reddit</SelectItem>" in source
-    assert "SelectItem value='linkedin'>linkedin</SelectItem>" in source
+    assert "import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'" in source
+    assert "import { faLinkedinIn, faRedditAlien } from '@fortawesome/free-brands-svg-icons'" in source
+    assert 'function socialIcon(platform: SocialPlatform): IconDefinition {' in source
+    assert "function formatSocial(value: SocialPlatform): string {" in source
+    assert "return value === 'linkedin' ? 'LinkedIn' : 'Reddit'" in source
+    assert "<FontAwesomeIcon icon={socialIcon(row.original.social)} className='size-3.5' />" in source
+    assert "<FontAwesomeIcon icon={socialIcon('reddit')} className='size-3.5' />" in source
+    assert "<FontAwesomeIcon icon={socialIcon('linkedin')} className='size-3.5' />" in source
+    assert 'Reddit' in source
+    assert 'LinkedIn' in source
     assert "title='Social'" in source
 
 
@@ -28,8 +36,18 @@ def test_settings_page_is_llm_only() -> None:
 
 def test_auth_page_supports_reddit_and_linkedin_auth_objects() -> None:
     source = Path('frontend/src/features/auths/index.tsx').read_text(encoding='utf-8')
-    assert "SelectItem value='reddit'>reddit</SelectItem>" in source
-    assert "SelectItem value='linkedin'>linkedin</SelectItem>" in source
+    assert "import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'" in source
+    assert "import { faLinkedinIn, faRedditAlien } from '@fortawesome/free-brands-svg-icons'" in source
+    assert 'function formatSocial(value: SocialPlatform): string {' in source
+    assert "return value === 'linkedin' ? 'LinkedIn' : 'Reddit'" in source
+    assert "<FontAwesomeIcon icon={socialIcon(row.original.social)} className='size-3.5' />" in source
+    assert "<FontAwesomeIcon icon={socialIcon('reddit')} className='size-3.5' />" in source
+    assert "<FontAwesomeIcon icon={socialIcon('linkedin')} className='size-3.5' />" in source
+    assert "function socialBadgeClass(_value: SocialPlatform): string {" in source
+    assert "return 'bg-muted text-muted-foreground'" in source
+    assert "bg-sky-600 text-white" not in source
+    assert "bg-orange-600 text-white" not in source
+    assert 'Create an auth object for Reddit or LinkedIn.' in source
     assert 'Reddit credentials' in source
     assert 'reddit-username' in source
     assert 'reddit-password' in source
@@ -43,6 +61,7 @@ def test_auth_page_supports_reddit_and_linkedin_auth_objects() -> None:
     assert 'linkedin-headless' not in source
     assert 'linkedin-wait-seconds' not in source
     assert 'User data dir' not in source
+    assert "Label htmlFor={`${prefix}-name`}>Name</Label>" not in source
 
 
 def test_auth_page_hides_manual_id_field_and_auto_login_on_linkedin_create() -> None:
@@ -56,13 +75,10 @@ def test_auth_page_hides_manual_id_field_and_auto_login_on_linkedin_create() -> 
     assert '~/.reddrop/linkedin/' not in source
 
 
-def test_auth_create_form_orders_social_before_name() -> None:
+def test_auth_create_form_removes_name_field() -> None:
     source = Path('frontend/src/features/auths/index.tsx').read_text(encoding='utf-8')
-    social_index = source.find("Label htmlFor={`${prefix}-social`}>Social</Label>")
-    name_index = source.find("Label htmlFor={`${prefix}-name`}>Name</Label>")
-    assert social_index != -1
-    assert name_index != -1
-    assert social_index < name_index
+    assert "Label htmlFor={`${prefix}-social`}>Social</Label>" in source
+    assert "Label htmlFor={`${prefix}-name`}>Name</Label>" not in source
 
 
 def test_linkedin_create_rolls_back_auth_when_login_fails() -> None:
@@ -81,3 +97,17 @@ def test_auth_table_shows_id_column() -> None:
     source = Path('frontend/src/features/auths/index.tsx').read_text(encoding='utf-8')
     assert "accessorKey: 'id'" in source
     assert "title='ID'" in source
+    assert "function shortId(value: string): string" in source
+    assert "return normalized.slice(0, 8)" in source
+
+
+def test_auth_table_uses_username_and_status_columns() -> None:
+    source = Path('frontend/src/features/auths/index.tsx').read_text(encoding='utf-8')
+    assert "title='Username'" in source
+    assert "title='Status'" in source
+    assert "title='Summary'" not in source
+
+
+def test_auth_page_calls_explicit_validation_api_for_status() -> None:
+    source = Path('frontend/src/features/auths/index.tsx').read_text(encoding='utf-8')
+    assert 'await reddropApi.validateAuths()' in source

@@ -11,9 +11,11 @@ from typing import Literal
 
 from ..models import JobsConfig, PeriodicSearchJob
 
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
 
 class JobConfigStore:
-    def __init__(self, config_path: str | Path = ".reddrop/jobs_config.json") -> None:
+    def __init__(self, config_path: str | Path = _BACKEND_ROOT / ".reddrop/jobs_config.json") -> None:
         self.config_path = Path(config_path)
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         legacy_path = self.config_path.parent / "jobs" / "jobs_config.json"
@@ -62,13 +64,13 @@ class JobConfigStore:
         social: Literal["reddit", "linkedin"] = "reddit",
         auth_id: str | None = None,
         source_job_id: str | None = None,
-        topic: str,
-        min_similarity_score: float = 0.35,
+        topic: str | None = None,
+        min_similarity_score: float | None = 0.35,
         active: bool = False,
-        time_filter: str,
-        subreddit_limit: int,
-        threads_limit: int,
-        replies_per_iteration: int = 3,
+        time_filter: str | None = None,
+        subreddit_limit: int | None = None,
+        threads_limit: int | None = None,
+        replies_per_iteration: int | None = 3,
         max_runtime_minutes: int = 1440,
         personas: list[str] | None = None,
     ) -> PeriodicSearchJob:
@@ -120,13 +122,13 @@ class JobConfigStore:
         social: Literal["reddit", "linkedin"] = "reddit",
         auth_id: str | None = None,
         source_job_id: str | None = None,
-        topic: str,
-        min_similarity_score: float = 0.35,
+        topic: str | None = None,
+        min_similarity_score: float | None = 0.35,
         active: bool = False,
-        time_filter: str,
-        subreddit_limit: int,
-        threads_limit: int,
-        replies_per_iteration: int = 3,
+        time_filter: str | None = None,
+        subreddit_limit: int | None = None,
+        threads_limit: int | None = None,
+        replies_per_iteration: int | None = 3,
         max_runtime_minutes: int = 1440,
         personas: list[str] | None = None,
     ) -> PeriodicSearchJob:
@@ -206,7 +208,7 @@ class JobConfigStore:
                     threads_limit=job.threads_limit,
                     replies_per_iteration=job.replies_per_iteration,
                     max_runtime_minutes=job.max_runtime_minutes,
-                    personas=list(job.personas),
+                    personas=(list(job.personas) if job.personas is not None else None),
                 )
                 self._config.jobs[index] = updated
                 self._persist()
@@ -287,7 +289,7 @@ class JobConfigStore:
         return {"jobs": normalized_jobs}
 
     def _persist(self) -> None:
-        payload = self._config.model_dump(mode="json")
+        payload = self._config.model_dump(mode="json", exclude_none=True)
         with self._exclusive_lock():
             self._write_atomic(payload)
 

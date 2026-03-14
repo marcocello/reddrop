@@ -14,9 +14,18 @@ def test_jobs_ui_and_auths_ui_expose_linkedin_controls() -> None:
     auths_source = Path('frontend/src/features/auths/index.tsx').read_text(encoding='utf-8')
 
     assert "Label htmlFor={`${prefix}-job-social`}>Social</Label>" in jobs_source
-    assert "SelectItem value='reddit'>reddit</SelectItem>" in jobs_source
-    assert "SelectItem value='linkedin'>linkedin</SelectItem>" in jobs_source
+    assert "import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'" in jobs_source
+    assert "import { faLinkedinIn, faRedditAlien } from '@fortawesome/free-brands-svg-icons'" in jobs_source
+    assert "return value === 'linkedin' ? 'LinkedIn' : 'Reddit'" in jobs_source
+    assert "<FontAwesomeIcon icon={socialIcon('reddit')} className='size-3.5' />" in jobs_source
+    assert "<FontAwesomeIcon icon={socialIcon('linkedin')} className='size-3.5' />" in jobs_source
 
+    assert "import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'" in auths_source
+    assert "import { faLinkedinIn, faRedditAlien } from '@fortawesome/free-brands-svg-icons'" in auths_source
+    assert "return value === 'linkedin' ? 'LinkedIn' : 'Reddit'" in auths_source
+    assert "<FontAwesomeIcon icon={socialIcon('reddit')} className='size-3.5' />" in auths_source
+    assert "<FontAwesomeIcon icon={socialIcon('linkedin')} className='size-3.5' />" in auths_source
+    assert 'Create an auth object for Reddit or LinkedIn.' in auths_source
     assert 'LinkedIn credentials' in auths_source
     assert 'linkedin-email' not in auths_source
     assert 'linkedin-password' not in auths_source
@@ -27,6 +36,9 @@ def test_jobs_ui_and_auths_ui_expose_linkedin_controls() -> None:
     assert 'reddit-client-id' not in auths_source
     assert 'reddit-client-secret' not in auths_source
     assert "accessorKey: 'id'" in auths_source
+    assert "Label htmlFor={`${prefix}-name`}>Name</Label>" not in auths_source
+    assert "title='Username'" in auths_source
+    assert "title='Status'" in auths_source
 
 
 def test_runtime_logging_bridge_is_present() -> None:

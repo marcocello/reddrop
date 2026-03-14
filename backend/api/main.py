@@ -5,7 +5,6 @@ import heapq
 import json
 import os
 import re
-import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +20,7 @@ from pydantic import BaseModel, Field
 # - python -m uvicorn backend.api.main:app  (repo root cwd)
 # - python -m uvicorn api.main:app          (backend/ cwd)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -47,7 +47,7 @@ from backend.services.reddit_service import RedditService
 from backend.services.search_storage import SearchStorage
 from backend.services.settings_store import SettingsStore
 
-DEFAULT_HOME = _REPO_ROOT / ".reddrop"
+DEFAULT_HOME = _BACKEND_ROOT / ".reddrop"
 DEFAULT_JOBS_CONFIG = DEFAULT_HOME / "jobs_config.json"
 DEFAULT_RUNS_DIR = DEFAULT_HOME / "runs"
 DEFAULT_TIME_FILTER = "week"
@@ -82,7 +82,7 @@ def _default_linkedin_user_data_dir(name: str, auth_id: str) -> str:
 def _resolve_linkedin_user_data_dir(raw_dir: str) -> str:
     raw = (raw_dir or "").strip() or ".reddrop/auth/linkedin"
     candidate = Path(raw).expanduser()
-    resolved = candidate if candidate.is_absolute() else (_REPO_ROOT / candidate)
+    resolved = candidate if candidate.is_absolute() else (_BACKEND_ROOT / candidate)
     try:
         resolved = resolved.resolve()
     except Exception:
@@ -94,7 +94,7 @@ def _resolve_linkedin_user_data_dir(raw_dir: str) -> str:
             relative_tail = resolved.relative_to(home_reddrop)
         except Exception:
             relative_tail = Path("auth/linkedin")
-        resolved = (_REPO_ROOT / ".reddrop" / relative_tail).resolve()
+        resolved = (_BACKEND_ROOT / ".reddrop" / relative_tail).resolve()
     return str(resolved)
 
 
@@ -118,15 +118,15 @@ class AddJobRequest(BaseModel):
     social: Literal["reddit", "linkedin"] = "reddit"
     auth_id: str | None = None
     source_job_id: str | None = None
-    topic: str = ""
+    topic: str | None = None
     active: bool | None = None
-    time_filter: str = DEFAULT_TIME_FILTER
-    subreddit_limit: int = DEFAULT_SUBREDDIT_LIMIT
-    threads_limit: int = DEFAULT_THREADS_LIMIT
-    replies_per_iteration: int = DEFAULT_REPLIES_PER_ITERATION
-    min_similarity_score: float = Field(default=DEFAULT_MIN_SIMILARITY_SCORE, ge=0.0, le=1.0)
+    time_filter: str | None = None
+    subreddit_limit: int | None = None
+    threads_limit: int | None = None
+    replies_per_iteration: int | None = None
+    min_similarity_score: float | None = Field(default=None, ge=0.0, le=1.0)
     max_runtime_minutes: int = DEFAULT_MAX_RUNTIME_MINUTES
-    personas: list[str] = Field(default_factory=list)
+    personas: list[str] | None = None
 
 
 class SearchRequest(BaseModel):
@@ -166,6 +166,16 @@ class AuthCatalogResponse(BaseModel):
 
 class UpsertAuthsRequest(BaseModel):
     auths: list[AuthProfile]
+
+
+class AuthValidationResult(BaseModel):
+    auth_id: str
+    social: Literal["reddit", "linkedin"]
+    status: Literal["ok", "invalid"]
+
+
+class AuthValidationResultsResponse(BaseModel):
+    results: list[AuthValidationResult]
 
 
 class JobActionResponse(BaseModel):
@@ -255,7 +265,11 @@ def _auth_by_ref(auth_ref: str) -> AuthProfile:
         raise HTTPException(status_code=404, detail="Auth not found")
     store = _auth_store()
     for auth in store.list_auths():
-        if auth.id == normalized or auth.name == normalized:
+        if (
+            auth.id == normalized
+            or auth.name == normalized
+            or auth.reddit_username.strip() == normalized
+        ):
             return auth
     raise HTTPException(status_code=404, detail=f"Auth not found: {auth_ref}")
 
@@ -326,7 +340,7 @@ def _job_status_payload(job: PeriodicSearchJob) -> dict[str, Any]:
     conversations = search.conversations if search is not None else []
     threads_found_total = len(conversations)
     threads_replied_total = sum(1 for item in conversations if bool(item.user_has_commented))
-    payload = job.model_dump(mode="json")
+    payload = job.model_dump(mode="json", exclude_none=True)
     payload["runtime"] = runtime
     payload["last_run_status"] = str(runtime.get("last_run_status", "never"))
     payload["successful_runs"] = int(runtime.get("successful_runs", 0) or 0)
@@ -379,16 +393,20 @@ def _build_job_runner(job_name: str):
             return f"search_file={search_file}"
 
         if job.job_type == "reply":
-            if not job.personas:
+            personas = [item.strip() for item in (job.personas or []) if item and item.strip()]
+            if not personas:
                 raise RuntimeError(f"Reply job {job.name} requires at least one persona.")
             source_search_file = _resolve_reply_source_search_file(job, store)
             _stop_if_requested()
             set_phase("replying")
             _run_reply_for_job(
                 search_file=source_search_file,
-                persona=job.personas[0],
-                replies=max(1, int(job.replies_per_iteration)),
-                min_similarity=max(0.0, min(1.0, float(job.min_similarity_score))),
+                persona=personas[0],
+                replies=max(1, int(job.replies_per_iteration or DEFAULT_REPLIES_PER_ITERATION)),
+                min_similarity=max(
+                    0.0,
+                    min(1.0, float(job.min_similarity_score if job.min_similarity_score is not None else DEFAULT_MIN_SIMILARITY_SCORE)),
+                ),
                 should_stop=should_stop,
                 job_logger=job_logger,
             )
@@ -504,7 +522,7 @@ def _thread_payload(
     persona_names: list[str] = []
     if reply_job is not None:
         seen: set[str] = set()
-        for item in reply_job.personas:
+        for item in (reply_job.personas or []):
             value = item.strip()
             if not value:
                 continue
@@ -518,7 +536,7 @@ def _thread_payload(
         "job_id": search_job.id,
         "job_name": search_job.name,
         "social": _resolve_social(getattr(search_job, "social", "reddit")),
-        "topic": search_job.topic,
+        "topic": search_job.topic or "",
         "search_job_id": search_job.id,
         "search_job_name": search_job.name,
         "reply_job_id": None if reply_job is None else reply_job.id,
@@ -565,7 +583,7 @@ def _collect_reply_personas(reply_jobs: list[PeriodicSearchJob]) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
     for job in reply_jobs:
-        for raw in job.personas:
+        for raw in (job.personas or []):
             value = raw.strip()
             if not value:
                 continue
@@ -829,8 +847,51 @@ def _persona_catalog_payload(store: PersonaStore) -> dict[str, Any]:
 
 def _auth_catalog_payload(store: AuthStore) -> dict[str, Any]:
     source = store.resolve_file()
-    auths = [item.model_dump(mode="json") for item in store.list_auths()]
+    auths: list[dict[str, Any]] = []
+    for item in store.list_auths():
+        payload = item.model_dump(mode="json")
+        payload["status"] = _auth_status(item)
+        auths.append(payload)
     return {"auths": auths, "source": None if source is None else str(source)}
+
+
+def _auth_validation_payload(auth: AuthProfile) -> dict[str, str]:
+    social = _resolve_social(auth.social)
+    valid = False
+    if social == "reddit":
+        valid = RedditService.validate_credentials(
+            client_id=(auth.reddit_client_id.strip() or (os.getenv("REDDIT_CLIENT_ID") or "").strip()),
+            client_secret=(auth.reddit_client_secret.strip() or (os.getenv("REDDIT_CLIENT_SECRET") or "").strip()),
+            user_agent=(
+                auth.reddit_user_agent.strip()
+                or (os.getenv("REDDIT_USER_AGENT") or "").strip()
+                or "Reddrop:v1.0"
+            ),
+            username=auth.reddit_username.strip(),
+            password=auth.reddit_password.strip(),
+        )
+    else:
+        resolved_dir = _resolve_linkedin_user_data_dir(auth.linkedin_user_data_dir.strip())
+        validator = getattr(LinkedinService, "validate_saved_session", None)
+        if callable(validator):
+            try:
+                valid = bool(validator(user_data_dir=resolved_dir))
+            except Exception:
+                valid = False
+        else:
+            profile_dir = Path(resolved_dir)
+            valid = profile_dir.exists() and profile_dir.is_dir()
+
+    status: Literal["ok", "invalid"] = "ok" if valid else "invalid"
+    return {
+        "auth_id": auth.id,
+        "social": social,
+        "status": status,
+    }
+
+
+def _auth_status(auth: AuthProfile) -> Literal["ok", "invalid"]:
+    return "ok" if _auth_validation_payload(auth)["status"] == "ok" else "invalid"
 
 
 @app.on_event("startup")
@@ -893,12 +954,17 @@ def upsert_auths(request: UpsertAuthsRequest) -> dict[str, Any]:
     seen_ids: set[str] = set()
     for auth in request.auths:
         auth_id = auth.id.strip() or str(uuid4())
-        auth_name = auth.name.strip() or auth_id
+        social = _resolve_social(auth.social)
+        reddit_username = auth.reddit_username.strip()
+        auth_name = auth.name.strip()
+        if social == "reddit":
+            auth_name = auth_name or reddit_username or auth_id
+        else:
+            auth_name = auth_name or "linkedin"
         lowered = auth_id.lower()
         if lowered in seen_ids:
             raise HTTPException(status_code=400, detail=f"Duplicate auth id: {auth_id}")
         seen_ids.add(lowered)
-        social = _resolve_social(auth.social)
         linkedin_user_data_dir = auth.linkedin_user_data_dir.strip()
         linkedin_headless = auth.linkedin_headless.strip() or "true"
         linkedin_wait_seconds = auth.linkedin_wait_seconds.strip() or "120"
@@ -915,13 +981,14 @@ def upsert_auths(request: UpsertAuthsRequest) -> dict[str, Any]:
                 reddit_client_id=auth.reddit_client_id,
                 reddit_client_secret=auth.reddit_client_secret,
                 reddit_user_agent=auth.reddit_user_agent,
-                reddit_username=auth.reddit_username,
+                reddit_username=reddit_username,
                 reddit_password=auth.reddit_password,
                 linkedin_email=auth.linkedin_email,
                 linkedin_password=auth.linkedin_password,
                 linkedin_headless=linkedin_headless,
                 linkedin_user_data_dir=linkedin_user_data_dir,
                 linkedin_wait_seconds=linkedin_wait_seconds,
+                status="invalid",
             )
         )
 
@@ -933,6 +1000,18 @@ def upsert_auths(request: UpsertAuthsRequest) -> dict[str, Any]:
     payload = _auth_catalog_payload(store)
     payload["source"] = str(persisted_path)
     return payload
+
+
+@app.post("/auths/{auth_ref}/validate", response_model=AuthValidationResult)
+def validate_auth(auth_ref: str) -> dict[str, str]:
+    auth = _auth_by_ref(auth_ref)
+    return _auth_validation_payload(auth)
+
+
+@app.post("/auths/validate", response_model=AuthValidationResultsResponse)
+def validate_auths() -> dict[str, list[dict[str, str]]]:
+    results = [_auth_validation_payload(item) for item in _auth_store().list_auths()]
+    return {"results": results}
 
 
 @app.get("/settings", response_model=SettingsPayload)
@@ -963,34 +1042,16 @@ def run_linkedin_login(auth_ref: str) -> dict[str, Any]:
     except Exception:
         wait_seconds = 120
 
-    command = [
-        sys.executable,
-        "-m",
-        "app.linkedin_scraper",
-        "login",
-        "--user-data-dir",
-        user_data_dir,
-        "--wait-seconds",
-        str(wait_seconds),
-    ]
+    try:
+        payload = LinkedinService.login_and_save_session(
+            user_data_dir=user_data_dir,
+            wait_seconds=wait_seconds,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        timeout=max(120, wait_seconds + 60),
-        cwd=str(_REPO_ROOT),
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "LinkedIn login command failed.").strip()
-        raise HTTPException(status_code=500, detail=detail)
-
-    return {
-        "status": "ok",
-        "command": command,
-        "stdout": (result.stdout or "").strip(),
-        "stderr": (result.stderr or "").strip(),
-    }
+    payload["auth_id"] = auth.id
+    return payload
 
 
 @app.get("/jobs")
@@ -1020,13 +1081,15 @@ def create_job(request: AddJobRequest) -> dict[str, Any]:
 
     requested_social = _resolve_social(request.social)
     requested_auth_id = (request.auth_id or "").strip() or None
+    request_job_type = "reply" if request.job_type == "reply" else "search"
 
     source_job: PeriodicSearchJob | None = None
-    if request.job_type == "reply":
+    if request_job_type == "reply":
         source_job_id = (request.source_job_id or "").strip()
         if not source_job_id:
             raise HTTPException(status_code=400, detail="source_job_id is required for reply jobs.")
-        if not request.personas:
+        personas = [item.strip() for item in (request.personas or []) if item and item.strip()]
+        if not personas:
             raise HTTPException(status_code=400, detail="At least one persona is required for reply jobs.")
         source_job = store.get_job_by_id(source_job_id)
         if source_job is None:
@@ -1048,11 +1111,42 @@ def create_job(request: AddJobRequest) -> dict[str, Any]:
                 detail=f"Reply job auth_id must match source search job auth_id: {source_auth_id}",
             )
         requested_auth_id = source_auth_id
+        topic_value: str | None = None
+        time_filter_value: str | None = None
+        subreddit_limit_value: int | None = None
+        threads_limit_value: int | None = None
+        min_similarity_score_value = (
+            request.min_similarity_score
+            if request.min_similarity_score is not None
+            else DEFAULT_MIN_SIMILARITY_SCORE
+        )
+        replies_per_iteration_value = (
+            request.replies_per_iteration
+            if request.replies_per_iteration is not None and request.replies_per_iteration > 0
+            else DEFAULT_REPLIES_PER_ITERATION
+        )
+        personas_value: list[str] | None = personas
     else:
-        if not request.topic.strip():
+        topic_text = (request.topic or "").strip()
+        if not topic_text:
             raise HTTPException(status_code=400, detail="topic is required for search jobs.")
         if not requested_auth_id:
             raise HTTPException(status_code=400, detail="auth_id is required for search jobs.")
+        topic_value = topic_text
+        time_filter_value = (request.time_filter or DEFAULT_TIME_FILTER).strip() or DEFAULT_TIME_FILTER
+        subreddit_limit_value = (
+            request.subreddit_limit
+            if request.subreddit_limit is not None and request.subreddit_limit > 0
+            else DEFAULT_SUBREDDIT_LIMIT
+        )
+        threads_limit_value = (
+            request.threads_limit
+            if request.threads_limit is not None and request.threads_limit > 0
+            else DEFAULT_THREADS_LIMIT
+        )
+        min_similarity_score_value = None
+        replies_per_iteration_value = None
+        personas_value = None
 
     if not requested_auth_id:
         raise HTTPException(status_code=400, detail="auth_id is required.")
@@ -1067,23 +1161,23 @@ def create_job(request: AddJobRequest) -> dict[str, Any]:
             detail=f"Auth social must match job social: {auth_social} != {requested_social}",
         )
 
-    topic_value = request.topic.strip() if request.job_type == "search" else ""
+    max_runtime_minutes = request.max_runtime_minutes if request.max_runtime_minutes > 0 else DEFAULT_MAX_RUNTIME_MINUTES
 
     args = argparse.Namespace(
         name=request.name,
-        job_type=request.job_type,
+        job_type=request_job_type,
         social=requested_social,
         auth_id=requested_auth_id,
-        source_job_id=(request.source_job_id or "").strip() or None,
+        source_job_id=((request.source_job_id or "").strip() or None) if request_job_type == "reply" else None,
         topic=topic_value,
-        min_similarity_score=request.min_similarity_score,
+        min_similarity_score=min_similarity_score_value,
         active=bool(request.active),
-        time_filter=request.time_filter,
-        subreddit_limit=request.subreddit_limit,
-        threads_limit=request.threads_limit,
-        replies_per_iteration=request.replies_per_iteration,
-        max_runtime_minutes=request.max_runtime_minutes,
-        personas=request.personas,
+        time_filter=time_filter_value,
+        subreddit_limit=subreddit_limit_value,
+        threads_limit=threads_limit_value,
+        replies_per_iteration=replies_per_iteration_value,
+        max_runtime_minutes=max_runtime_minutes,
+        personas=personas_value,
     )
 
     payload: dict[str, Any] = {}

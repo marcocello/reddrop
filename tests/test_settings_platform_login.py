@@ -46,25 +46,24 @@ def test_settings_include_linkedin_login_runtime_fields(tmp_path, monkeypatch) -
         assert payload['openrouter']['model'] == 'x-ai/grok-4.1-fast'
 
 
-def test_linkedin_login_endpoint_runs_scraper_command(tmp_path, monkeypatch) -> None:
+def test_linkedin_login_endpoint_uses_service_login_flow(tmp_path, monkeypatch) -> None:
     _setup_isolated_runtime(tmp_path, monkeypatch)
 
     captured: dict[str, object] = {}
 
-    class _Result:
-        returncode = 0
-        stdout = 'ok'
-        stderr = ''
+    class _FakeLinkedinService:
+        @staticmethod
+        def login_and_save_session(*, user_data_dir: str, wait_seconds: int, login_url: str = "https://www.linkedin.com/login"):
+            captured["user_data_dir"] = user_data_dir
+            captured["wait_seconds"] = wait_seconds
+            captured["login_url"] = login_url
+            return {
+                "status": "session_saved",
+                "user_data_dir": user_data_dir,
+                "login_url": login_url,
+            }
 
-    def fake_run(cmd, capture_output, text, timeout, cwd):
-        captured['cmd'] = cmd
-        captured['capture_output'] = capture_output
-        captured['text'] = text
-        captured['timeout'] = timeout
-        captured['cwd'] = cwd
-        return _Result()
-
-    monkeypatch.setattr(api_main.subprocess, 'run', fake_run)
+    monkeypatch.setattr(api_main, "LinkedinService", _FakeLinkedinService)
 
     with TestClient(api_main.app) as client:
         save = client.put(
@@ -89,23 +88,18 @@ def test_linkedin_login_endpoint_runs_scraper_command(tmp_path, monkeypatch) -> 
         login = client.post('/auths/linkedin-main/linkedin/login')
         assert login.status_code == 200
         payload = login.json()
-        assert payload['status'] == 'ok'
+        assert payload['status'] == 'session_saved'
+        assert 'auth_id' in payload
+        assert payload['auth_id'] == 'linkedin-main'
 
-    command = captured['cmd']
-    assert isinstance(command, list)
-    assert '-m' in command
-    assert 'app.linkedin_scraper' in command
-    assert 'login' in command
-    assert '--user-data-dir' in command
-    assert any('.reddrop/auth/linkedin/linkedin-main-linkedin' in str(part) for part in command)
-    assert not any(str(part).startswith(str(Path.home() / '.reddrop')) for part in command)
-    assert '--wait-seconds' in command
-    assert '120' in command
-    assert captured['cwd'] == str(api_main._REPO_ROOT)
+    assert '.reddrop/auth/linkedin/linkedin-main-linkedin' in str(captured['user_data_dir'])
+    assert not str(captured['user_data_dir']).startswith(str(Path.home() / '.reddrop'))
+    assert captured['wait_seconds'] == 120
+    assert captured['login_url'] == "https://www.linkedin.com/login"
 
 
-def test_linkedin_scraper_verifies_login_completion_and_closes_browser() -> None:
-    source = Path('app/linkedin_scraper.py').read_text(encoding='utf-8')
+def test_linkedin_service_verifies_login_completion_and_closes_browser() -> None:
+    source = Path('backend/services/linkedin_service.py').read_text(encoding='utf-8')
     assert 'def _url_requires_login' in source
     assert 'def _url_is_authenticated' in source
     assert 'def _url_points_to_feed' in source
@@ -123,23 +117,37 @@ def test_linkedin_scraper_verifies_login_completion_and_closes_browser() -> None
 
 
 def test_linkedin_defaults_use_project_local_reddrop_paths() -> None:
-    scraper_source = Path('app/linkedin_scraper.py').read_text(encoding='utf-8')
     models_source = Path('backend/models.py').read_text(encoding='utf-8')
     service_source = Path('backend/services/linkedin_service.py').read_text(encoding='utf-8')
     api_source = Path('backend/api/main.py').read_text(encoding='utf-8')
     cli_source = Path('backend/cli/reddrop.py').read_text(encoding='utf-8')
 
-    assert '.reddrop/auth/linkedin' in scraper_source
-    assert '~/.linkedin-playwright' not in scraper_source
-    assert '~/.reddrop' not in scraper_source
-
     assert 'linkedin_user_data_dir: str = ".reddrop/auth/linkedin"' in models_source
-    assert '~/.linkedin-playwright' not in models_source
+    assert '~/.reddrop' not in models_source
 
     assert 'LINKEDIN_USER_DATA_DIR") or ".reddrop/auth/linkedin"' in service_source
-    assert '~/.linkedin-playwright' not in service_source
+    assert 'def login_and_save_session' in service_source
+    assert '~/.reddrop' not in service_source
 
-    assert 'DEFAULT_HOME = _REPO_ROOT / ".reddrop"' in api_source
+    assert 'DEFAULT_HOME = _BACKEND_ROOT / ".reddrop"' in api_source
     assert '_resolve_linkedin_user_data_dir' in api_source
-    assert 'DEFAULT_HOME = _REPO_ROOT / ".reddrop"' in cli_source
+    assert 'DEFAULT_HOME = _BACKEND_ROOT / ".reddrop"' in cli_source
     assert '_resolve_linkedin_user_data_dir' in cli_source
+
+
+def test_backend_source_relative_defaults_are_used_for_runtime_files() -> None:
+    api_source = Path('backend/api/main.py').read_text(encoding='utf-8')
+    cli_source = Path('backend/cli/reddrop.py').read_text(encoding='utf-8')
+    linkedin_service_source = Path('backend/services/linkedin_service.py').read_text(encoding='utf-8')
+    persona_store_source = Path('backend/services/persona_store.py').read_text(encoding='utf-8')
+    settings_store_source = Path('backend/services/settings_store.py').read_text(encoding='utf-8')
+    job_store_source = Path('backend/services/job_config_store.py').read_text(encoding='utf-8')
+    auth_store_source = Path('backend/services/auth_store.py').read_text(encoding='utf-8')
+
+    assert '_BACKEND_ROOT = Path(__file__).resolve().parents[1]' in api_source
+    assert '_BACKEND_ROOT = Path(__file__).resolve().parents[1]' in cli_source
+    assert '_BACKEND_ROOT = Path(__file__).resolve().parents[1]' in linkedin_service_source
+    assert '_BACKEND_ROOT / ".reddrop/personas.json"' in persona_store_source
+    assert '_BACKEND_ROOT / ".reddrop/settings.yaml"' in settings_store_source
+    assert '_BACKEND_ROOT / ".reddrop/jobs_config.json"' in job_store_source
+    assert '_BACKEND_ROOT / ".reddrop/auth"' in auth_store_source

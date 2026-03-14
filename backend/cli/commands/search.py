@@ -38,9 +38,12 @@ def _search_job(job: PeriodicSearchJob, storage, deps: SearchDependencies):
     if deps.prepare_job is not None:
         deps.prepare_job(job)
 
-    normalized_topic = job.topic.strip()
+    normalized_topic = str(job.topic or "").strip()
     if not normalized_topic:
         raise ValueError("Topic must be configured before running autonomous analysis.")
+    time_filter = str(job.time_filter or "week").strip() or "week"
+    subreddit_limit = max(1, int(job.subreddit_limit or 5))
+    threads_limit = max(1, int(job.threads_limit or 10))
 
     now = deps.now_fn()
     existing_artifact = storage.get_search(job.id)
@@ -69,15 +72,15 @@ def _search_job(job: PeriodicSearchJob, storage, deps: SearchDependencies):
         job.id,
         social,
         normalized_topic,
-        job.time_filter,
-        job.subreddit_limit,
-        job.threads_limit,
+        time_filter,
+        subreddit_limit,
+        threads_limit,
     )
     threads = discovery_service.discover_relevant_threads(
         content=normalized_topic,
-        time_filter=job.time_filter,
-        subreddit_limit=job.subreddit_limit,
-        threads_limit=job.threads_limit,
+        time_filter=time_filter,
+        subreddit_limit=subreddit_limit,
+        threads_limit=threads_limit,
         job_id=job.id,
         stop_requested=deps.should_stop,
     )

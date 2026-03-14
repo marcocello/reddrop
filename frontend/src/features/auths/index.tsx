@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { faLinkedinIn, faRedditAlien } from '@fortawesome/free-brands-svg-icons'
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import {
   type ColumnDef,
   type ColumnFiltersState,
@@ -11,7 +14,7 @@ import {
   useReactTable,
   type VisibilityState,
 } from '@tanstack/react-table'
-import { Copy, MoreHorizontal, Pencil, Play, Trash2 } from 'lucide-react'
+import { CheckCircle2, CircleX, Copy, MoreHorizontal, Pencil, Play, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { DataTableColumnHeader, DataTablePagination, DataTableToolbar } from '@/components/data-table'
 import { Header } from '@/components/layout/header'
@@ -61,6 +64,7 @@ function buildDefaultAuth(): AuthProfile {
     id: '',
     name: '',
     social: 'reddit',
+    status: undefined,
     reddit_client_id: '',
     reddit_client_secret: '',
     reddit_user_agent: 'Reddrop:v1.0',
@@ -82,6 +86,12 @@ function createAuthId(): string {
   return `00000000-0000-4000-8000-${random}`
 }
 
+function shortId(value: string): string {
+  const normalized = value.trim()
+  if (!normalized) return '-'
+  return normalized.slice(0, 8)
+}
+
 function normalizeToken(value: string): string {
   return value
     .trim()
@@ -91,54 +101,75 @@ function normalizeToken(value: string): string {
     .replace(/^-+|-+$/g, '')
 }
 
-function buildLinkedinProfileDir(name: string, authId: string): string {
-  const namePart = normalizeToken(name).slice(0, 24) || 'linkedin'
+function buildLinkedinProfileDir(label: string, authId: string): string {
+  const namePart = normalizeToken(label).slice(0, 24) || 'linkedin'
   const idPart = authId.slice(0, 8) || 'auth'
   return `.reddrop/auth/linkedin/${namePart}-${idPart}`
 }
 
 function normalizeAuth(payload: AuthProfile): AuthProfile {
-  const name = payload.name.trim()
   const id = payload.id.trim() || createAuthId()
   const social: SocialPlatform = payload.social === 'linkedin' ? 'linkedin' : 'reddit'
+  const redditUsername = payload.reddit_username.trim()
+  const generatedName = social === 'reddit'
+    ? (redditUsername || `reddit-${id.slice(0, 8)}`)
+    : `linkedin-${id.slice(0, 8)}`
   return {
     ...payload,
     id,
-    name,
+    name: generatedName,
     social,
+    status: payload.status,
     reddit_client_id: payload.reddit_client_id.trim(),
     reddit_client_secret: payload.reddit_client_secret.trim(),
     reddit_user_agent: payload.reddit_user_agent.trim() || 'Reddrop:v1.0',
-    reddit_username: payload.reddit_username.trim(),
+    reddit_username: redditUsername,
     reddit_password: payload.reddit_password.trim(),
     linkedin_email: payload.linkedin_email.trim(),
     linkedin_password: payload.linkedin_password.trim(),
     linkedin_headless: 'true',
     linkedin_user_data_dir: social === 'linkedin'
-      ? buildLinkedinProfileDir(name, id)
+      ? buildLinkedinProfileDir(generatedName, id)
       : payload.linkedin_user_data_dir.trim(),
     linkedin_wait_seconds: '120',
   }
 }
 
-function socialBadgeClass(value: SocialPlatform): string {
-  return value === 'linkedin'
-    ? 'bg-sky-600 text-white'
-    : 'bg-orange-600 text-white'
+function socialBadgeClass(_value: SocialPlatform): string {
+  return 'bg-muted text-muted-foreground'
 }
 
-function summaryText(item: AuthProfile): string {
-  if (item.social === 'linkedin') {
-    return 'LinkedIn browser session'
+function formatSocial(value: SocialPlatform): string {
+  return value === 'linkedin' ? 'LinkedIn' : 'Reddit'
+}
+
+function socialIcon(platform: SocialPlatform): IconDefinition {
+  return platform === 'linkedin' ? faLinkedinIn : faRedditAlien
+}
+
+function authUsername(item: AuthProfile): string {
+  if (item.social === 'reddit') {
+    return item.reddit_username.trim() || '-'
   }
-  return item.reddit_username || 'No Reddit username'
+  return '-'
+}
+
+function authLabel(item: AuthProfile): string {
+  const username = authUsername(item)
+  if (username !== '-') return username
+  return shortId(item.id)
+}
+
+function statusBadgeClass(status: string | undefined): string {
+  if (status === 'ok') return 'bg-emerald-600 text-white'
+  return 'bg-red-600 text-white'
 }
 
 export function AuthsPage() {
   const [auths, setAuths] = useState<AuthProfile[]>([])
   const [saving, setSaving] = useState(false)
   const [busyKey, setBusyKey] = useState<string | null>(null)
-  const [sorting, setSorting] = useState<SortingState>([{ id: 'name', desc: false }])
+  const [sorting, setSorting] = useState<SortingState>([{ id: 'id', desc: false }])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
@@ -149,19 +180,33 @@ export function AuthsPage() {
   const [selectedAuth, setSelectedAuth] = useState<AuthProfile | null>(null)
   const [form, setForm] = useState<AuthProfile>(buildDefaultAuth)
 
+  const applyValidatedStatuses = useCallback(async (items: AuthProfile[]): Promise<AuthProfile[]> => {
+    try {
+      const payload = await reddropApi.validateAuths()
+      const statusById = new Map(payload.results.map((entry) => [entry.auth_id, entry.status]))
+      return items.map((item) => ({
+        ...item,
+        status: statusById.get(item.id) ?? item.status ?? 'invalid',
+      }))
+    } catch {
+      return items
+    }
+  }, [])
+
   const loadAuths = useCallback(async (): Promise<void> => {
     try {
       const payload = await reddropApi.listAuths()
-      setAuths(payload.auths)
+      const validated = await applyValidatedStatuses(payload.auths)
+      setAuths(validated)
       setSelectedAuth((prev) => {
         if (!prev) return null
-        return payload.auths.find((item) => item.id === prev.id) ?? null
+        return validated.find((item) => item.id === prev.id) ?? null
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load auths'
       toast.error(message)
     }
-  }, [])
+  }, [applyValidatedStatuses])
 
   useEffect(() => {
     void loadAuths()
@@ -171,7 +216,8 @@ export function AuthsPage() {
     setSaving(true)
     try {
       const payload = await reddropApi.saveAuths({ auths: next })
-      setAuths(payload.auths)
+      const validated = await applyValidatedStatuses(payload.auths)
+      setAuths(validated)
       toast.success(successMessage)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to save auths'
@@ -180,7 +226,7 @@ export function AuthsPage() {
       setSaving(false)
       setBusyKey(null)
     }
-  }, [])
+  }, [applyValidatedStatuses])
 
   const openCreateDialog = useCallback((): void => {
     setSelectedAuth(null)
@@ -197,12 +243,16 @@ export function AuthsPage() {
 
   const saveFromSheet = useCallback(async (): Promise<void> => {
     const normalized = normalizeAuth(form)
-    if (!normalized.name) {
-      toast.error('Name is required.')
+    if (normalized.social === 'reddit' && !normalized.reddit_username.trim()) {
+      toast.error('Username is required for Reddit auth.')
+      return
+    }
+    if (normalized.social === 'reddit' && !normalized.reddit_password.trim()) {
+      toast.error('Password is required for Reddit auth.')
       return
     }
     if (!normalized.id) {
-      toast.error('Name must include letters or numbers.')
+      toast.error('Auth ID must include letters or numbers.')
       return
     }
 
@@ -229,17 +279,20 @@ export function AuthsPage() {
       let persisted = false
       try {
         const payload = await reddropApi.saveAuths({ auths: next })
-        setAuths(payload.auths)
+        const validated = await applyValidatedStatuses(payload.auths)
+        setAuths(validated)
         persisted = true
         await reddropApi.runLinkedinAuthLogin(normalized.id)
-        toast.success(`Created auth ${normalized.name}`)
-        toast.success(`Run LinkedIn login for ${normalized.name}`)
+        await loadAuths()
+        toast.success(`Created auth ${authLabel(normalized)}`)
+        toast.success(`Run LinkedIn login for ${authLabel(normalized)}`)
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to run LinkedIn login'
         if (persisted) {
           try {
             const rollback = await reddropApi.saveAuths({ auths })
-            setAuths(rollback.auths)
+            const rollbackValidated = await applyValidatedStatuses(rollback.auths)
+            setAuths(rollbackValidated)
             toast.error('LinkedIn login failed. Auth was not created.')
           } catch (rollbackError) {
             const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : 'Failed to rollback auth creation'
@@ -262,19 +315,19 @@ export function AuthsPage() {
     await persistAuths(
       next,
       selectedAuth === null
-        ? `Created auth ${normalized.name}`
-        : `Updated auth ${normalized.name}`
+        ? `Created auth ${authLabel(normalized)}`
+        : `Updated auth ${authLabel(normalized)}`
     )
     setSelectedAuth(selectedAuth === null ? null : normalized)
     setSheetOpen(false)
     setCreateDialogOpen(false)
-  }, [auths, form, persistAuths, selectedAuth])
+  }, [applyValidatedStatuses, auths, form, loadAuths, persistAuths, selectedAuth])
 
   const deleteAuth = useCallback(async (auth: AuthProfile): Promise<void> => {
     const key = `${auth.id}:delete`
     setBusyKey(key)
     const next = auths.filter((item) => item.id !== auth.id)
-    await persistAuths(next, `Deleted auth ${auth.name}`)
+    await persistAuths(next, `Deleted auth ${authLabel(auth)}`)
     if (selectedAuth?.id === auth.id) {
       setSelectedAuth(null)
       setSheetOpen(false)
@@ -288,13 +341,13 @@ export function AuthsPage() {
     const normalized = normalizeAuth({
       ...auth,
       id: duplicateId,
-      name: `${auth.name} Copy`,
+      reddit_username: auth.social === 'reddit' ? `${auth.reddit_username.trim() || 'user'}-copy` : auth.reddit_username,
     })
     const next = [
       ...auths,
       normalized,
     ]
-    await persistAuths(next, `Duplicated auth ${auth.name} as ${normalized.name}`)
+    await persistAuths(next, `Duplicated auth ${authLabel(auth)} as ${authLabel(normalized)}`)
   }, [auths, persistAuths])
 
   const runLinkedinLogin = useCallback(async (auth: AuthProfile): Promise<void> => {
@@ -306,14 +359,15 @@ export function AuthsPage() {
     setBusyKey(key)
     try {
       await reddropApi.runLinkedinAuthLogin(auth.id)
-      toast.success(`Run LinkedIn login for ${auth.name}`)
+      await loadAuths()
+      toast.success(`Run LinkedIn login for ${authLabel(auth)}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to run LinkedIn login'
       toast.error(message)
     } finally {
       setBusyKey(null)
     }
-  }, [])
+  }, [loadAuths])
 
   const requestDeleteAuth = useCallback((auth: AuthProfile): void => {
     setPendingDeleteAuth(auth)
@@ -330,31 +384,36 @@ export function AuthsPage() {
       {
         accessorKey: 'id',
         header: ({ column }) => <DataTableColumnHeader column={column} title='ID' />,
-        cell: ({ row }) => <span className='font-mono text-xs'>{row.original.id}</span>,
+        cell: ({ row }) => <span className='font-mono text-xs'>{shortId(row.original.id)}</span>,
       },
       {
-        accessorKey: 'name',
-        header: ({ column }) => <DataTableColumnHeader column={column} title='Name' />,
+        id: 'username',
+        accessorFn: (row) => authUsername(row),
+        header: ({ column }) => <DataTableColumnHeader column={column} title='Username' />,
         enableHiding: false,
-        cell: ({ row }) => <span className='font-medium'>{row.original.name}</span>,
+        cell: ({ row }) => <span className='font-medium'>{authUsername(row.original)}</span>,
       },
       {
         accessorKey: 'social',
         header: ({ column }) => <DataTableColumnHeader column={column} title='Social' />,
         cell: ({ row }) => (
           <Badge className={socialBadgeClass(row.original.social)}>
-            {row.original.social}
+            <span className='inline-flex items-center gap-1.5'>
+              <FontAwesomeIcon icon={socialIcon(row.original.social)} className='size-3.5' />
+              {formatSocial(row.original.social)}
+            </span>
           </Badge>
         ),
       },
       {
-        id: 'summary',
-        accessorFn: (row) => summaryText(row),
-        header: ({ column }) => <DataTableColumnHeader column={column} title='Summary' />,
+        id: 'status',
+        accessorFn: (row) => row.status ?? 'invalid',
+        header: ({ column }) => <DataTableColumnHeader column={column} title='Status' />,
         cell: ({ row }) => (
-          <span className='block max-w-[28rem] truncate' title={summaryText(row.original)}>
-            {summaryText(row.original)}
-          </span>
+          <Badge className={statusBadgeClass(row.original.status)}>
+            {row.original.status === 'ok' ? <CheckCircle2 className='mr-1 size-3' /> : <CircleX className='mr-1 size-3' />}
+            {row.original.status === 'ok' ? 'OK' : 'Invalid'}
+          </Badge>
         ),
       },
       {
@@ -421,9 +480,9 @@ export function AuthsPage() {
       const item = row.original
       return (
         item.id.toLowerCase().includes(query) ||
-        item.name.toLowerCase().includes(query) ||
+        authUsername(item).toLowerCase().includes(query) ||
         item.social.toLowerCase().includes(query) ||
-        summaryText(item).toLowerCase().includes(query)
+        (item.status ?? 'invalid').toLowerCase().includes(query)
       )
     },
     onSortingChange: setSorting,
@@ -451,21 +510,20 @@ export function AuthsPage() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value='reddit'>reddit</SelectItem>
-            <SelectItem value='linkedin'>linkedin</SelectItem>
+            <SelectItem value='reddit'>
+              <span className='inline-flex items-center gap-2'>
+                <FontAwesomeIcon icon={socialIcon('reddit')} className='size-3.5' />
+                Reddit
+              </span>
+            </SelectItem>
+            <SelectItem value='linkedin'>
+              <span className='inline-flex items-center gap-2'>
+                <FontAwesomeIcon icon={socialIcon('linkedin')} className='size-3.5' />
+                LinkedIn
+              </span>
+            </SelectItem>
           </SelectContent>
         </Select>
-      </div>
-
-      <div className='space-y-2'>
-        <Label htmlFor={`${prefix}-name`}>Name</Label>
-        <Input
-          id={`${prefix}-name`}
-          value={form.name}
-          onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-          placeholder={form.social === 'linkedin' ? 'LinkedIn Main' : 'Reddit Main'}
-          required
-        />
       </div>
 
       {form.social === 'reddit' ? (
@@ -528,7 +586,7 @@ export function AuthsPage() {
 
         <DataTableToolbar
           table={table}
-          searchPlaceholder='Search by auth id, name, social...'
+          searchPlaceholder='Search by auth id, username, social or status...'
         />
 
         <div className='space-y-4'>
@@ -557,7 +615,13 @@ export function AuthsPage() {
                       data-state={row.getIsSelected() && 'selected'}
                     >
                       {row.getVisibleCells().map((cell) => (
-                        <TableCell key={cell.id} className={cn(cell.column.id === ACTIONS_COLUMN_ID ? 'w-[60px]' : undefined)}>
+                        <TableCell
+                          key={cell.id}
+                          className={cn(
+                            cell.column.id === ACTIONS_COLUMN_ID ? 'w-[60px]' : undefined,
+                            cell.column.id === 'id' ? 'w-[96px]' : undefined,
+                          )}
+                        >
                           {flexRender(cell.column.columnDef.cell, cell.getContext())}
                         </TableCell>
                       ))}
@@ -582,7 +646,7 @@ export function AuthsPage() {
         <DialogContent className='sm:max-w-2xl'>
           <ModalDialogHeader>
             <ModalDialogTitle>Create auth</ModalDialogTitle>
-            <DialogDescription>Create an auth object for reddit or linkedin.</DialogDescription>
+            <DialogDescription>Create an auth object for Reddit or LinkedIn.</DialogDescription>
           </ModalDialogHeader>
           {renderAuthFormFields('create-auth')}
           <DialogFooter>
@@ -600,7 +664,7 @@ export function AuthsPage() {
         <SheetContent side='right' className='sm:max-w-xl p-0'>
           <div className='flex h-full flex-col'>
             <SheetHeader className='px-4 pt-4'>
-              <SheetTitle>{selectedAuth ? `Auth · ${selectedAuth.name}` : 'Auth details'}</SheetTitle>
+              <SheetTitle>{selectedAuth ? `Auth · ${authLabel(selectedAuth)}` : 'Auth details'}</SheetTitle>
               <SheetDescription>Manage this auth object and linked credentials.</SheetDescription>
             </SheetHeader>
 
@@ -645,7 +709,7 @@ export function AuthsPage() {
           if (!open) setPendingDeleteAuth(null)
         }}
         title='Delete auth'
-        desc={pendingDeleteAuth ? `Delete ${pendingDeleteAuth.name}? This cannot be undone.` : ''}
+        desc={pendingDeleteAuth ? `Delete ${authLabel(pendingDeleteAuth)}? This cannot be undone.` : ''}
         confirmText='Delete'
         destructive
         isLoading={pendingDeleteAuth ? busyKey === `${pendingDeleteAuth.id}:delete` : false}

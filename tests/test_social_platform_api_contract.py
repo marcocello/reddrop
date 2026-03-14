@@ -320,3 +320,135 @@ def test_auths_are_persisted_under_split_reddit_and_linkedin_paths(tmp_path, mon
     assert linkedin_dir.exists()
     assert (reddit_dir / 'auths.json').exists()
     assert (linkedin_dir / 'auths.json').exists()
+
+
+def test_auth_catalog_reports_health_status(tmp_path, monkeypatch) -> None:
+    _setup_isolated_runtime(tmp_path, monkeypatch)
+    calls: list[tuple[str, object]] = []
+
+    def fake_validate_reddit_credentials(*, client_id: str, client_secret: str, user_agent: str, username: str, password: str) -> bool:
+        calls.append(
+            (
+                "reddit",
+                {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "user_agent": user_agent,
+                    "username": username,
+                    "password": password,
+                },
+            )
+        )
+        return username == "alice"
+
+    def fake_validate_linkedin_saved_session(*, user_data_dir: str) -> bool:
+        calls.append(("linkedin", user_data_dir))
+        return "linkedin" in user_data_dir
+
+    monkeypatch.setenv("REDDIT_CLIENT_ID", "env-client-id")
+    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "env-client-secret")
+    monkeypatch.setenv("REDDIT_USER_AGENT", "env-agent")
+    monkeypatch.setattr(api_main.RedditService, "validate_credentials", staticmethod(fake_validate_reddit_credentials))
+    monkeypatch.setattr(api_main.LinkedinService, "validate_saved_session", staticmethod(fake_validate_linkedin_saved_session))
+
+    with TestClient(api_main.app) as client:
+        saved = client.put(
+            '/auths',
+            json={
+                'auths': [
+                    {
+                        'id': 'reddit-ok',
+                        'social': 'reddit',
+                        'reddit_username': 'alice',
+                        'reddit_password': 'pw',
+                    },
+                    {
+                        'id': 'reddit-invalid',
+                        'social': 'reddit',
+                        'reddit_username': 'bob',
+                        'reddit_password': '',
+                    },
+                    {
+                        'id': 'linkedin-ok',
+                        'social': 'linkedin',
+                    },
+                ]
+            },
+        )
+        assert saved.status_code == 200
+        payload = saved.json()
+        by_id = {item['id']: item for item in payload['auths']}
+        assert by_id['reddit-ok']['status'] == 'ok'
+        assert by_id['reddit-invalid']['status'] == 'invalid'
+        assert by_id['linkedin-ok']['status'] == 'ok'
+
+    assert any(item[0] == "reddit" for item in calls)
+    assert any(item[0] == "linkedin" for item in calls)
+
+
+def test_auth_validation_endpoints_check_reddit_and_linkedin(tmp_path, monkeypatch) -> None:
+    _setup_isolated_runtime(tmp_path, monkeypatch)
+    calls: list[tuple[str, object]] = []
+
+    def fake_validate_reddit_credentials(*, client_id: str, client_secret: str, user_agent: str, username: str, password: str) -> bool:
+        calls.append(
+            (
+                "reddit",
+                {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "user_agent": user_agent,
+                    "username": username,
+                    "password": password,
+                },
+            )
+        )
+        return username == "alice"
+
+    def fake_validate_linkedin_saved_session(*, user_data_dir: str) -> bool:
+        calls.append(("linkedin", user_data_dir))
+        return "linkedin" in user_data_dir
+
+    monkeypatch.setenv("REDDIT_CLIENT_ID", "env-client-id")
+    monkeypatch.setenv("REDDIT_CLIENT_SECRET", "env-client-secret")
+    monkeypatch.setenv("REDDIT_USER_AGENT", "env-agent")
+    monkeypatch.setattr(api_main.RedditService, "validate_credentials", staticmethod(fake_validate_reddit_credentials))
+    monkeypatch.setattr(api_main.LinkedinService, "validate_saved_session", staticmethod(fake_validate_linkedin_saved_session))
+
+    with TestClient(api_main.app) as client:
+        saved = client.put(
+            '/auths',
+            json={
+                'auths': [
+                    {
+                        'id': 'reddit-ok',
+                        'social': 'reddit',
+                        'reddit_username': 'alice',
+                        'reddit_password': 'pw',
+                    },
+                    {
+                        'id': 'linkedin-ok',
+                        'social': 'linkedin',
+                    },
+                ]
+            },
+        )
+        assert saved.status_code == 200
+
+        single = client.post('/auths/reddit-ok/validate')
+        assert single.status_code == 200
+        assert single.json() == {
+            'auth_id': 'reddit-ok',
+            'social': 'reddit',
+            'status': 'ok',
+        }
+
+        all_auths = client.post('/auths/validate')
+        assert all_auths.status_code == 200
+        payload = all_auths.json()
+        by_id = {item['auth_id']: item for item in payload['results']}
+        assert by_id['reddit-ok']['status'] == 'ok'
+        assert by_id['linkedin-ok']['status'] == 'ok'
+
+    assert any(item[0] == "reddit" for item in calls)
+    assert any(item[0] == "linkedin" for item in calls)
