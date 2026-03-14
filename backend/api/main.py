@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
+import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any, Literal
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,12 +31,15 @@ from backend.cli.commands import search as search_command
 from backend.cli.commands import send as send_command
 from backend.config.log import get_app_log_config, setup_logging
 from backend.models import (
+    AuthProfile,
     Conversation,
     PeriodicSearchJob,
     PersonaProfile,
     SearchArtifact,
 )
+from backend.services.auth_store import AuthStore
 from backend.services.job_config_store import JobConfigStore
+from backend.services.linkedin_service import LinkedinService
 from backend.services.llm_service import llm_service
 from backend.services.persona_store import PersonaStore
 from backend.services.reply_generation_service import ReplyGenerationService
@@ -51,6 +59,26 @@ DEFAULT_MAX_RUNTIME_MINUTES = 1440
 JOB_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 logger = setup_logging(__name__)
 
+
+def _resolve_social(raw: object) -> Literal["reddit", "linkedin"]:
+    value = str(raw or "").strip().lower()
+    if value == "linkedin":
+        return "linkedin"
+    return "reddit"
+
+
+def _slug_token(value: str) -> str:
+    token = re.sub(r"[^a-z0-9]+", "-", value.strip().lower())
+    token = re.sub(r"-+", "-", token).strip("-")
+    return token
+
+
+def _default_linkedin_user_data_dir(name: str, auth_id: str) -> str:
+    name_part = _slug_token(name)[:24] or "linkedin"
+    id_part = auth_id.strip()[:8] or "auth"
+    return f"~/.reddrop/linkedin/{name_part}-{id_part}"
+
+
 app = FastAPI(title="Reddrop API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -60,11 +88,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 runtime_manager = JobRuntimeManager()
+_threads_cache_lock = Lock()
+_threads_cache_signature: tuple[tuple[str, int, int], ...] | None = None
+_threads_cache_rows: list[dict[str, Any]] = []
 
 
 class AddJobRequest(BaseModel):
     name: str
     job_type: Literal["search", "reply"] = "search"
+    social: Literal["reddit", "linkedin"] = "reddit"
+    auth_id: str | None = None
     source_job_id: str | None = None
     topic: str = ""
     active: bool | None = None
@@ -107,6 +140,15 @@ class UpsertPersonasRequest(BaseModel):
     personas: list[PersonaProfile]
 
 
+class AuthCatalogResponse(BaseModel):
+    auths: list[AuthProfile]
+    source: str | None = None
+
+
+class UpsertAuthsRequest(BaseModel):
+    auths: list[AuthProfile]
+
+
 class JobActionResponse(BaseModel):
     name: str
     active: bool | None = None
@@ -120,14 +162,6 @@ class JobActionResponse(BaseModel):
     logs: list[dict[str, str]] = Field(default_factory=list)
 
 
-class RedditSettings(BaseModel):
-    client_id: str = ""
-    client_secret: str = ""
-    user_agent: str = "Reddrop:v1.0"
-    username: str = ""
-    password: str = ""
-
-
 class OpenRouterSettings(BaseModel):
     api_key: str = ""
     base_url: str = "https://openrouter.ai/api/v1"
@@ -138,8 +172,38 @@ class OpenRouterSettings(BaseModel):
 
 
 class SettingsPayload(BaseModel):
-    reddit: RedditSettings = Field(default_factory=RedditSettings)
     openrouter: OpenRouterSettings = Field(default_factory=OpenRouterSettings)
+
+
+class _JobBoundLogger:
+    def __init__(self, *, job_name: str, runtime: JobRuntimeManager) -> None:
+        self._job_name = job_name
+        self._runtime = runtime
+
+    @staticmethod
+    def _render(message: object, args: tuple[object, ...]) -> str:
+        template = str(message)
+        if not args:
+            return template
+        try:
+            return template % args
+        except Exception:
+            return " ".join([template, *[str(item) for item in args]])
+
+    def debug(self, message: object, *args: object) -> None:
+        self._runtime.append_log(self._job_name, f"DEBUG: {self._render(message, args)}")
+
+    def info(self, message: object, *args: object) -> None:
+        self._runtime.append_log(self._job_name, f"INFO: {self._render(message, args)}")
+
+    def warning(self, message: object, *args: object) -> None:
+        self._runtime.append_log(self._job_name, f"WARN: {self._render(message, args)}")
+
+    def error(self, message: object, *args: object) -> None:
+        self._runtime.append_log(self._job_name, f"ERROR: {self._render(message, args)}")
+
+    def exception(self, message: object, *args: object) -> None:
+        self._runtime.append_log(self._job_name, f"ERROR: {self._render(message, args)}")
 
 
 def _job_store() -> JobConfigStore:
@@ -154,7 +218,64 @@ def _settings_store() -> SettingsStore:
     return SettingsStore(DEFAULT_HOME / "settings.yaml")
 
 
+def _auth_store() -> AuthStore:
+    return AuthStore([DEFAULT_HOME / "auths.json"])
+
+
+def _auth_by_ref(auth_ref: str) -> AuthProfile:
+    normalized = auth_ref.strip()
+    if not normalized:
+        raise HTTPException(status_code=404, detail="Auth not found")
+    store = _auth_store()
+    for auth in store.list_auths():
+        if auth.id == normalized or auth.name == normalized:
+            return auth
+    raise HTTPException(status_code=404, detail=f"Auth not found: {auth_ref}")
+
+
+def _apply_auth_to_env(auth: AuthProfile) -> None:
+    social = _resolve_social(auth.social)
+    if social == "reddit":
+        client_id = auth.reddit_client_id.strip()
+        client_secret = auth.reddit_client_secret.strip()
+        user_agent = auth.reddit_user_agent.strip()
+        if client_id:
+            os.environ["REDDIT_CLIENT_ID"] = client_id
+        if client_secret:
+            os.environ["REDDIT_CLIENT_SECRET"] = client_secret
+        if user_agent:
+            os.environ["REDDIT_USER_AGENT"] = user_agent
+        elif not (os.getenv("REDDIT_USER_AGENT") or "").strip():
+            os.environ["REDDIT_USER_AGENT"] = "Reddrop:v1.0"
+        os.environ["REDDIT_USERNAME"] = auth.reddit_username.strip()
+        os.environ["REDDIT_PASSWORD"] = auth.reddit_password.strip()
+        return
+
+    os.environ["LINKEDIN_EMAIL"] = auth.linkedin_email.strip()
+    os.environ["LINKEDIN_PASSWORD"] = auth.linkedin_password.strip()
+    os.environ["LINKEDIN_HEADLESS"] = auth.linkedin_headless.strip() or "true"
+    os.environ["LINKEDIN_USER_DATA_DIR"] = auth.linkedin_user_data_dir.strip()
+    os.environ["LINKEDIN_WAIT_SECONDS"] = auth.linkedin_wait_seconds.strip() or "120"
+
+
+def _auth_for_job(job: PeriodicSearchJob) -> AuthProfile | None:
+    auth_id = (job.auth_id or "").strip()
+    if not auth_id:
+        return None
+    return _auth_store().get_auth(auth_id)
+
+
+def _prepare_auth_for_job(job: PeriodicSearchJob) -> None:
+    auth = _auth_for_job(job)
+    if auth is None:
+        raise RuntimeError(f"Auth not found for job {job.name}: {job.auth_id}")
+    if _resolve_social(auth.social) != _resolve_social(job.social):
+        raise RuntimeError(f"Auth social mismatch for job {job.name}: {auth.social} != {job.social}")
+    _apply_auth_to_env(auth)
+
+
 def _error(message: str) -> int:
+    logger.error("%s", message)
     raise HTTPException(status_code=400, detail=message)
 
 
@@ -221,11 +342,12 @@ def _build_job_runner(job_name: str):
         if job is None:
             raise RuntimeError(f"Job not found: {job_name}")
         should_stop = lambda: runtime_manager.should_stop(job_name)
+        job_logger = _JobBoundLogger(job_name=job_name, runtime=runtime_manager)
 
         if job.job_type == "search":
             _stop_if_requested()
             set_phase("searching")
-            search_file = _run_search_for_job(job.name, should_stop=should_stop)
+            search_file = _run_search_for_job(job.name, should_stop=should_stop, job_logger=job_logger)
             _stop_if_requested()
             return f"search_file={search_file}"
 
@@ -241,6 +363,7 @@ def _build_job_runner(job_name: str):
                 replies=max(1, int(job.replies_per_iteration)),
                 min_similarity=max(0.0, min(1.0, float(job.min_similarity_score))),
                 should_stop=should_stop,
+                job_logger=job_logger,
             )
             _stop_if_requested()
             return f"reply_file={source_search_file}"
@@ -250,16 +373,18 @@ def _build_job_runner(job_name: str):
     return _runner
 
 
-def _run_search_for_job(job_name: str, *, should_stop=None) -> str:
+def _run_search_for_job(job_name: str, *, should_stop=None, job_logger=None) -> str:
     args = argparse.Namespace(name=job_name)
     deps = search_command.SearchDependencies(
-        logger=logger,
+        logger=job_logger or logger,
         search_storage_factory=_search_storage,
         reddit_service_cls=RedditService,
+        linkedin_service_cls=LinkedinService,
         conversation_model=Conversation,
         search_artifact_model=SearchArtifact,
         now_fn=search_command.utc_now,
         should_stop=should_stop or (lambda: False),
+        prepare_job=_prepare_auth_for_job,
     )
     payload: dict[str, Any] = {}
     errors: list[str] = []
@@ -292,6 +417,7 @@ def _run_reply_for_job(
     replies: int,
     min_similarity: float = DEFAULT_MIN_SIMILARITY_SCORE,
     should_stop=None,
+    job_logger=None,
 ) -> None:
     args = argparse.Namespace(
         search_file=search_file,
@@ -300,7 +426,7 @@ def _run_reply_for_job(
         min_similarity=min_similarity,
     )
     deps = reply_command.ReplyDependencies(
-        logger=logger,
+        logger=job_logger or logger,
         runs_dir=DEFAULT_RUNS_DIR,
         persona_store_cls=PersonaStore,
         reply_generation_service_cls=ReplyGenerationService,
@@ -316,17 +442,20 @@ def _run_reply_for_job(
         raise RuntimeError(errors[-1] if errors else f"Reply failed for {search_file}")
 
 
-def _run_send_for_job(*, search_file: str, should_stop=None) -> None:
+def _run_send_for_job(*, search_file: str, should_stop=None, job_logger=None) -> None:
     args = argparse.Namespace(search_file=search_file)
     deps = send_command.SendDependencies(
-        logger=logger,
+        logger=job_logger or logger,
         runs_dir=DEFAULT_RUNS_DIR,
         search_storage_cls=SearchStorage,
         reddit_service_cls=RedditService,
+        linkedin_service_cls=LinkedinService,
+        job_store_factory=_job_store,
         conversation_model=Conversation,
         search_artifact_model=SearchArtifact,
         now_fn=send_command.utc_now,
         should_stop=should_stop or (lambda: False),
+        prepare_job=_prepare_auth_for_job,
     )
     errors: list[str] = []
     rc = send_command.handle(args, lambda _data: None, lambda message: errors.append(message) or 1, deps)
@@ -340,14 +469,34 @@ def _thread_key_match(item: Conversation, *, thread_id: str, subreddit: str) -> 
 
 def _thread_payload(
     *,
-    job: PeriodicSearchJob,
+    search_job: PeriodicSearchJob,
     conversation: Conversation,
     reply: str = "",
+    reply_job: PeriodicSearchJob | None = None,
 ) -> dict[str, Any]:
+    persona_names: list[str] = []
+    if reply_job is not None:
+        seen: set[str] = set()
+        for item in reply_job.personas:
+            value = item.strip()
+            if not value:
+                continue
+            lowered = value.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            persona_names.append(value)
+
     return {
-        "job_id": job.id,
-        "job_name": job.name,
-        "topic": job.topic,
+        "job_id": search_job.id,
+        "job_name": search_job.name,
+        "social": _resolve_social(getattr(search_job, "social", "reddit")),
+        "topic": search_job.topic,
+        "search_job_id": search_job.id,
+        "search_job_name": search_job.name,
+        "reply_job_id": None if reply_job is None else reply_job.id,
+        "reply_job_name": None if reply_job is None else reply_job.name,
+        "reply_personas": persona_names,
         "thread_id": conversation.thread_id,
         "subreddit": conversation.subreddit,
         "title": conversation.title,
@@ -361,6 +510,63 @@ def _thread_payload(
         "reply": reply or conversation.reply,
         "has_reply": bool((reply or conversation.reply).strip()),
     }
+
+
+def _reply_jobs_by_source_from_jobs(jobs: list[PeriodicSearchJob]) -> dict[str, list[PeriodicSearchJob]]:
+    mapping: dict[str, list[PeriodicSearchJob]] = {}
+    for job in jobs:
+        if job.job_type != "reply":
+            continue
+        source_id = (job.source_job_id or "").strip()
+        if not source_id:
+            continue
+        mapping.setdefault(source_id, []).append(job)
+
+    for source_id, reply_jobs in mapping.items():
+        mapping[source_id] = sorted(
+            reply_jobs,
+            key=lambda item: (not item.active, item.name.lower(), item.id),
+        )
+    return mapping
+
+
+def _reply_jobs_by_source_id() -> dict[str, list[PeriodicSearchJob]]:
+    return _reply_jobs_by_source_from_jobs(_job_store().list_jobs())
+
+
+def _collect_reply_personas(reply_jobs: list[PeriodicSearchJob]) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for job in reply_jobs:
+        for raw in job.personas:
+            value = raw.strip()
+            if not value:
+                continue
+            lowered = value.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            names.append(value)
+    return names
+
+
+def _resolve_thread_job_context(job_ref: str) -> tuple[PeriodicSearchJob, PeriodicSearchJob | None]:
+    store = _job_store()
+    target = _job_by_ref(job_ref)
+
+    if target.job_type == "reply":
+        source_id = (target.source_job_id or "").strip()
+        if not source_id:
+            raise HTTPException(status_code=400, detail=f"Reply job {target.name} is missing source_job_id.")
+        source_job = store.get_job_by_id(source_id)
+        if source_job is None:
+            raise HTTPException(status_code=404, detail=f"Source search job not found: {source_id}")
+        if source_job.job_type != "search":
+            raise HTTPException(status_code=400, detail=f"Source job must be search type: {source_job.name}")
+        return source_job, target
+
+    linked_reply_jobs = _reply_jobs_by_source_from_jobs(store.list_jobs()).get(target.id, [])
+    return target, (linked_reply_jobs[0] if linked_reply_jobs else None)
 
 
 def _resolve_artifact_path(prefix: str, artifact_name: str) -> Path:
@@ -383,54 +589,66 @@ def _read_search_artifact(path: Path) -> SearchArtifact | None:
         return None
 
 
-def _list_threads_from_artifacts(
-    *,
-    job_id: str | None,
-    job_name: str | None,
-    subreddit: str | None,
-    min_similarity: float | None,
-    only_open: bool,
-    has_reply: bool | None,
-) -> list[dict[str, Any]]:
-    DEFAULT_RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    rows: list[dict[str, Any]] = []
+def _thread_sort_key(item: dict[str, Any]) -> tuple[float, int, str, str]:
+    return (
+        float(item.get("semantic_similarity", 0.0) or 0.0),
+        int(item.get("score", 0) or 0),
+        str(item.get("thread_id", "")),
+        str(item.get("subreddit", "")),
+    )
 
-    normalized_job_id = (job_id or "").strip()
-    normalized_job_name = (job_name or "").strip()
-    normalized_subreddit = (subreddit or "").strip()
+
+def _runs_snapshot_signature() -> tuple[tuple[str, int, int], ...]:
+    DEFAULT_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    snapshot: list[tuple[str, int, int]] = []
+    try:
+        jobs_stat = DEFAULT_JOBS_CONFIG.stat()
+        snapshot.append(("__jobs_config__", int(jobs_stat.st_mtime_ns), int(jobs_stat.st_size)))
+    except OSError:
+        snapshot.append(("__jobs_config__", 0, 0))
+    for search_path in sorted(DEFAULT_RUNS_DIR.glob("search_*.json"), key=lambda item: item.name):
+        try:
+            stat = search_path.stat()
+        except OSError:
+            continue
+        snapshot.append((search_path.name, int(stat.st_mtime_ns), int(stat.st_size)))
+    return tuple(snapshot)
+
+
+def _build_threads_cache_rows() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    reply_jobs_by_source = _reply_jobs_by_source_id()
+    jobs_by_id = {job.id: job for job in _job_store().list_jobs()}
 
     for search_path in sorted(DEFAULT_RUNS_DIR.glob("search_*.json"), key=lambda item: item.name):
         artifact = _read_search_artifact(search_path)
         if artifact is None:
             continue
-        if normalized_job_id and artifact.id != normalized_job_id:
-            continue
-        if normalized_job_name and artifact.name != normalized_job_name:
-            continue
+
+        linked_reply_jobs = reply_jobs_by_source.get(artifact.id, [])
+        primary_reply_job = linked_reply_jobs[0] if linked_reply_jobs else None
+        search_job = jobs_by_id.get(artifact.id)
+        social = _resolve_social(getattr(search_job, "social", "reddit"))
+        reply_personas = _collect_reply_personas(linked_reply_jobs)
+        reply_job_ids = [item.id for item in linked_reply_jobs]
+        reply_job_names = [item.name for item in linked_reply_jobs]
 
         for conversation in artifact.conversations:
-            if normalized_subreddit and conversation.subreddit != normalized_subreddit:
-                continue
-            similarity = float(conversation.semantic_similarity or 0.0)
-            if min_similarity is not None and similarity < float(min_similarity):
-                continue
-
             reply_text = conversation.reply
-            user_has_commented = bool(conversation.user_has_commented)
             has_reply_value = bool(reply_text.strip())
-
-            if only_open and user_has_commented:
-                continue
-            if has_reply is True and not has_reply_value:
-                continue
-            if has_reply is False and has_reply_value:
-                continue
-
             rows.append(
                 {
                     "job_id": artifact.id,
                     "job_name": artifact.name,
+                    "social": social,
                     "topic": artifact.topic,
+                    "search_job_id": artifact.id,
+                    "search_job_name": artifact.name,
+                    "reply_job_id": None if primary_reply_job is None else primary_reply_job.id,
+                    "reply_job_name": None if primary_reply_job is None else primary_reply_job.name,
+                    "linked_reply_job_ids": reply_job_ids,
+                    "linked_reply_job_names": reply_job_names,
+                    "reply_personas": reply_personas,
                     "search_artifact": search_path.name,
                     "search_updated_at": artifact.updated_at,
                     "thread_id": conversation.thread_id,
@@ -441,15 +659,107 @@ def _list_threads_from_artifacts(
                     "num_comments": int(conversation.num_comments),
                     "created_utc": conversation.created_utc,
                     "selftext": conversation.selftext,
-                    "semantic_similarity": similarity,
-                    "user_has_commented": user_has_commented,
+                    "semantic_similarity": float(conversation.semantic_similarity or 0.0),
+                    "user_has_commented": bool(conversation.user_has_commented),
                     "reply": reply_text,
                     "has_reply": has_reply_value,
                 }
             )
-
-    rows.sort(key=lambda item: (item["semantic_similarity"], item["score"]), reverse=True)
     return rows
+
+
+def _cached_thread_rows() -> list[dict[str, Any]]:
+    global _threads_cache_signature, _threads_cache_rows
+    signature = _runs_snapshot_signature()
+    with _threads_cache_lock:
+        if _threads_cache_signature == signature:
+            return _threads_cache_rows
+
+    rebuilt_rows = _build_threads_cache_rows()
+
+    with _threads_cache_lock:
+        _threads_cache_signature = signature
+        _threads_cache_rows = rebuilt_rows
+        return _threads_cache_rows
+
+
+def _thread_row_matches_filters(
+    item: dict[str, Any],
+    *,
+    job_id: str,
+    job_name: str,
+    subreddit: str,
+    min_similarity: float | None,
+    only_open: bool,
+    has_reply: bool | None,
+) -> bool:
+    if job_id and str(item.get("job_id", "")) != job_id:
+        return False
+    if job_name and str(item.get("job_name", "")) != job_name:
+        return False
+    if subreddit and str(item.get("subreddit", "")) != subreddit:
+        return False
+
+    similarity = float(item.get("semantic_similarity", 0.0) or 0.0)
+    if min_similarity is not None and similarity < float(min_similarity):
+        return False
+
+    user_has_commented = bool(item.get("user_has_commented"))
+    has_reply_value = bool(item.get("has_reply"))
+    if only_open and user_has_commented:
+        return False
+    if has_reply is True and not has_reply_value:
+        return False
+    if has_reply is False and has_reply_value:
+        return False
+    return True
+
+
+def _list_threads_from_artifacts(
+    *,
+    job_id: str | None,
+    job_name: str | None,
+    subreddit: str | None,
+    min_similarity: float | None,
+    only_open: bool,
+    has_reply: bool | None,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict[str, Any]], int]:
+    normalized_job_id = (job_id or "").strip()
+    normalized_job_name = (job_name or "").strip()
+    normalized_subreddit = (subreddit or "").strip()
+    max_ranked = offset + limit
+
+    matched_total = 0
+    heap: list[tuple[tuple[float, int, str, str], int, dict[str, Any]]] = []
+
+    for item in _cached_thread_rows():
+        if not _thread_row_matches_filters(
+            item,
+            job_id=normalized_job_id,
+            job_name=normalized_job_name,
+            subreddit=normalized_subreddit,
+            min_similarity=min_similarity,
+            only_open=only_open,
+            has_reply=has_reply,
+        ):
+            continue
+
+        matched_total += 1
+        if max_ranked <= 0:
+            continue
+
+        sort_key = _thread_sort_key(item)
+        entry = (sort_key, matched_total, item)
+        if len(heap) < max_ranked:
+            heapq.heappush(heap, entry)
+            continue
+        if sort_key > heap[0][0]:
+            heapq.heapreplace(heap, entry)
+
+    ranked = [item[2] for item in sorted(heap, key=lambda row: (row[0], row[1]), reverse=True)]
+    return ranked[offset : offset + limit], matched_total
 
 
 def _list_artifacts(prefix: str) -> dict[str, Any]:
@@ -488,6 +798,12 @@ def _persona_catalog_payload(store: PersonaStore) -> dict[str, Any]:
     source = store.resolve_file()
     personas = [item.model_dump(mode="json") for item in store.list_personas()]
     return {"personas": personas, "source": None if source is None else str(source)}
+
+
+def _auth_catalog_payload(store: AuthStore) -> dict[str, Any]:
+    source = store.resolve_file()
+    auths = [item.model_dump(mode="json") for item in store.list_auths()]
+    return {"auths": auths, "source": None if source is None else str(source)}
 
 
 @app.on_event("startup")
@@ -534,6 +850,60 @@ def upsert_personas(request: UpsertPersonasRequest) -> dict[str, Any]:
     return payload
 
 
+@app.get("/auths", response_model=AuthCatalogResponse)
+def list_auths() -> dict[str, Any]:
+    try:
+        return _auth_catalog_payload(_auth_store())
+    except FileNotFoundError:
+        return {"auths": [], "source": None}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load auths file: {exc}") from exc
+
+
+@app.put("/auths", response_model=AuthCatalogResponse)
+def upsert_auths(request: UpsertAuthsRequest) -> dict[str, Any]:
+    normalized_auths: list[AuthProfile] = []
+    seen_ids: set[str] = set()
+    for auth in request.auths:
+        auth_id = auth.id.strip() or str(uuid4())
+        auth_name = auth.name.strip() or auth_id
+        lowered = auth_id.lower()
+        if lowered in seen_ids:
+            raise HTTPException(status_code=400, detail=f"Duplicate auth id: {auth_id}")
+        seen_ids.add(lowered)
+        social = _resolve_social(auth.social)
+        linkedin_user_data_dir = auth.linkedin_user_data_dir.strip()
+        if social == "linkedin":
+            linkedin_user_data_dir = _default_linkedin_user_data_dir(auth_name, auth_id)
+
+        normalized_auths.append(
+            AuthProfile(
+                id=auth_id,
+                name=auth_name,
+                social=social,
+                reddit_client_id=auth.reddit_client_id,
+                reddit_client_secret=auth.reddit_client_secret,
+                reddit_user_agent=auth.reddit_user_agent,
+                reddit_username=auth.reddit_username,
+                reddit_password=auth.reddit_password,
+                linkedin_email=auth.linkedin_email,
+                linkedin_password=auth.linkedin_password,
+                linkedin_headless=auth.linkedin_headless,
+                linkedin_user_data_dir=linkedin_user_data_dir,
+                linkedin_wait_seconds=auth.linkedin_wait_seconds,
+            )
+        )
+
+    store = _auth_store()
+    try:
+        persisted_path = store.save_auths(normalized_auths)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save auths file: {exc}") from exc
+    payload = _auth_catalog_payload(store)
+    payload["source"] = str(persisted_path)
+    return payload
+
+
 @app.get("/settings", response_model=SettingsPayload)
 def list_settings() -> dict[str, Any]:
     return _settings_store().load()
@@ -542,11 +912,53 @@ def list_settings() -> dict[str, Any]:
 @app.put("/settings", response_model=SettingsPayload)
 def save_settings(request: SettingsPayload) -> dict[str, Any]:
     payload = _settings_store().save(
-        reddit=request.reddit.model_dump(mode="json"),
         openrouter=request.openrouter.model_dump(mode="json"),
     )
     llm_service.reload_from_env()
     return payload
+
+
+@app.post("/auths/{auth_ref}/linkedin/login")
+def run_linkedin_login(auth_ref: str) -> dict[str, Any]:
+    auth = _auth_by_ref(auth_ref)
+    if _resolve_social(auth.social) != "linkedin":
+        raise HTTPException(status_code=400, detail=f"Auth is not LinkedIn: {auth_ref}")
+
+    user_data_dir = auth.linkedin_user_data_dir.strip() or str(DEFAULT_HOME / "linkedin-playwright")
+    raw_wait = auth.linkedin_wait_seconds.strip() or "120"
+    try:
+        wait_seconds = max(30, int(raw_wait))
+    except Exception:
+        wait_seconds = 120
+
+    command = [
+        sys.executable,
+        "-m",
+        "app.linkedin_scraper",
+        "login",
+        "--user-data-dir",
+        user_data_dir,
+        "--wait-seconds",
+        str(wait_seconds),
+    ]
+
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=max(120, wait_seconds + 60),
+        cwd=str(_REPO_ROOT),
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "LinkedIn login command failed.").strip()
+        raise HTTPException(status_code=500, detail=detail)
+
+    return {
+        "status": "ok",
+        "command": command,
+        "stdout": (result.stdout or "").strip(),
+        "stderr": (result.stderr or "").strip(),
+    }
 
 
 @app.get("/jobs")
@@ -569,9 +981,14 @@ def get_job(name: str) -> dict[str, Any]:
 @app.post("/jobs")
 def create_job(request: AddJobRequest) -> dict[str, Any]:
     store = _job_store()
+    auth_store = _auth_store()
     existing = store.get_job_by_name(request.name)
     if existing is not None:
         raise HTTPException(status_code=409, detail=f"Job name already exists: {request.name}")
+
+    requested_social = _resolve_social(request.social)
+    requested_auth_id = (request.auth_id or "").strip() or None
+
     source_job: PeriodicSearchJob | None = None
     if request.job_type == "reply":
         source_job_id = (request.source_job_id or "").strip()
@@ -584,15 +1001,47 @@ def create_job(request: AddJobRequest) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=f"Source search job not found: {source_job_id}")
         if source_job.job_type != "search":
             raise HTTPException(status_code=400, detail=f"Source job must be search type: {source_job.name}")
+        source_social = _resolve_social(getattr(source_job, "social", "reddit"))
+        requested_social = source_social
+
+        source_auth_id = (source_job.auth_id or "").strip()
+        if not source_auth_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Source search job {source_job.name} has no auth_id configured.",
+            )
+        if requested_auth_id and requested_auth_id != source_auth_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Reply job auth_id must match source search job auth_id: {source_auth_id}",
+            )
+        requested_auth_id = source_auth_id
     else:
         if not request.topic.strip():
             raise HTTPException(status_code=400, detail="topic is required for search jobs.")
+        if not requested_auth_id:
+            raise HTTPException(status_code=400, detail="auth_id is required for search jobs.")
+
+    if not requested_auth_id:
+        raise HTTPException(status_code=400, detail="auth_id is required.")
+
+    auth = auth_store.get_auth(requested_auth_id)
+    if auth is None:
+        raise HTTPException(status_code=400, detail=f"Auth not found: {requested_auth_id}")
+    auth_social = _resolve_social(auth.social)
+    if auth_social != requested_social:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Auth social must match job social: {auth_social} != {requested_social}",
+        )
 
     topic_value = request.topic.strip() if request.job_type == "search" else ""
 
     args = argparse.Namespace(
         name=request.name,
         job_type=request.job_type,
+        social=requested_social,
+        auth_id=requested_auth_id,
         source_job_id=(request.source_job_id or "").strip() or None,
         topic=topic_value,
         min_similarity_score=request.min_similarity_score,
@@ -722,9 +1171,11 @@ def run_search(request: SearchRequest) -> dict[str, Any]:
         logger=logger,
         search_storage_factory=_search_storage,
         reddit_service_cls=RedditService,
+        linkedin_service_cls=LinkedinService,
         conversation_model=Conversation,
         search_artifact_model=SearchArtifact,
         now_fn=search_command.utc_now,
+        prepare_job=_prepare_auth_for_job,
     )
     payload: dict[str, Any] = {}
 
@@ -773,9 +1224,12 @@ def send_reply(request: SendRequest) -> dict[str, Any]:
         runs_dir=DEFAULT_RUNS_DIR,
         search_storage_cls=SearchStorage,
         reddit_service_cls=RedditService,
+        linkedin_service_cls=LinkedinService,
+        job_store_factory=_job_store,
         conversation_model=Conversation,
         search_artifact_model=SearchArtifact,
         now_fn=send_command.utc_now,
+        prepare_job=_prepare_auth_for_job,
     )
     payload: dict[str, Any] = {}
 
@@ -801,16 +1255,16 @@ def list_threads(
         raise HTTPException(status_code=400, detail="limit must be between 1 and 500")
     if offset < 0:
         raise HTTPException(status_code=400, detail="offset must be >= 0")
-    rows = _list_threads_from_artifacts(
+    threads, total = _list_threads_from_artifacts(
         job_id=job_id,
         job_name=job_name,
         subreddit=subreddit,
         min_similarity=min_similarity,
         only_open=only_open,
         has_reply=has_reply,
+        limit=limit,
+        offset=offset,
     )
-    total = len(rows)
-    threads = rows[offset : offset + limit]
     return {
         "threads": threads,
         "total": total,
@@ -830,11 +1284,11 @@ def create_reply_for_thread(
     if not persona_name:
         raise HTTPException(status_code=400, detail="persona is required")
 
-    job = _job_by_ref(job_ref)
+    search_job, reply_job = _resolve_thread_job_context(job_ref)
     search_storage = _search_storage()
-    search_artifact = search_storage.get_search(job.id)
+    search_artifact = search_storage.get_search(search_job.id)
     if search_artifact is None:
-        raise HTTPException(status_code=404, detail=f"Search artifact not found for job: {job.id}")
+        raise HTTPException(status_code=404, detail=f"Search artifact not found for job: {search_job.id}")
 
     conversation = next(
         (
@@ -867,7 +1321,7 @@ def create_reply_for_thread(
     if not generated_text.strip():
         raise HTTPException(status_code=500, detail="Reply generation returned empty output.")
 
-    search_path = search_storage.path_for_job(job.id)
+    search_path = search_storage.path_for_job(search_job.id)
     timestamp = datetime.now(timezone.utc)
     updated_conversations: list[Conversation] = []
     for item in search_artifact.conversations:
@@ -889,7 +1343,7 @@ def create_reply_for_thread(
         conversations=updated_conversations,
     )
     search_storage.save_search_at_path(search_path, updated_search)
-    persisted = search_storage.get_search(job.id)
+    persisted = search_storage.get_search(search_job.id)
     if persisted is None:
         raise HTTPException(status_code=500, detail="Persisted search artifact not found after reply generation.")
 
@@ -905,7 +1359,12 @@ def create_reply_for_thread(
         raise HTTPException(status_code=500, detail="Persisted reply not found after save.")
 
     return {
-        **_thread_payload(job=job, conversation=updated, reply=updated.reply),
+        **_thread_payload(
+            search_job=search_job,
+            conversation=updated,
+            reply=updated.reply,
+            reply_job=reply_job,
+        ),
         "search_file": search_path.name,
         "updated_at": persisted.updated_at,
     }
@@ -913,12 +1372,12 @@ def create_reply_for_thread(
 
 @app.post("/threads/{job_ref}/{subreddit}/{thread_id}/send")
 def send_reply_for_thread(job_ref: str, subreddit: str, thread_id: str) -> dict[str, Any]:
-    job = _job_by_ref(job_ref)
+    search_job, reply_job = _resolve_thread_job_context(job_ref)
     search_storage = _search_storage()
-    search_artifact = search_storage.get_search(job.id)
+    search_artifact = search_storage.get_search(search_job.id)
     if search_artifact is None:
-        raise HTTPException(status_code=404, detail=f"Search artifact not found for job: {job.id}")
-    search_path = search_storage.path_for_job(job.id)
+        raise HTTPException(status_code=404, detail=f"Search artifact not found for job: {search_job.id}")
+    search_path = search_storage.path_for_job(search_job.id)
 
     selected = next(
         (
@@ -933,10 +1392,18 @@ def send_reply_for_thread(job_ref: str, subreddit: str, thread_id: str) -> dict[
     if not selected.reply.strip():
         raise HTTPException(status_code=400, detail="Reply text is empty.")
 
+    social = _resolve_social(getattr(search_job, "social", "reddit"))
+    _prepare_auth_for_job(search_job)
+    post_service: RedditService | LinkedinService
+    if social == "linkedin":
+        post_service = LinkedinService()
+    else:
+        post_service = RedditService()
+
     if not selected.user_has_commented:
-        posted = RedditService().post_comment(thread_id=selected.thread_id, comment_text=selected.reply)
+        posted = post_service.post_comment(thread_id=selected.thread_id, comment_text=selected.reply)
         if not posted:
-            raise HTTPException(status_code=502, detail="Failed to send reply to Reddit.")
+            raise HTTPException(status_code=502, detail=f"Failed to send reply to {social}.")
 
     now = datetime.now(timezone.utc)
 
@@ -967,7 +1434,12 @@ def send_reply_for_thread(job_ref: str, subreddit: str, thread_id: str) -> dict[
         raise HTTPException(status_code=500, detail="Persisted sent reply not found.")
 
     return {
-        **_thread_payload(job=job, conversation=sent, reply=sent.reply),
+        **_thread_payload(
+            search_job=search_job,
+            conversation=sent,
+            reply=sent.reply,
+            reply_job=reply_job,
+        ),
         "search_file": search_path.name,
         "updated_at": now,
     }

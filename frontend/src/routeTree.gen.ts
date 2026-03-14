@@ -15,6 +15,7 @@ import { Route as AuthenticatedThreadsIndexRouteImport } from './routes/_authent
 import { Route as AuthenticatedSettingsIndexRouteImport } from './routes/_authenticated/settings/index'
 import { Route as AuthenticatedPersonasIndexRouteImport } from './routes/_authenticated/personas/index'
 import { Route as AuthenticatedJobsIndexRouteImport } from './routes/_authenticated/jobs/index'
+import { Route as AuthenticatedAuthsIndexRouteImport } from './routes/_authenticated/auths/index'
 
 const AuthenticatedRouteRoute = AuthenticatedRouteRouteImport.update({
   id: '/_authenticated',
@@ -48,9 +49,15 @@ const AuthenticatedJobsIndexRoute = AuthenticatedJobsIndexRouteImport.update({
   path: '/jobs/',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
+const AuthenticatedAuthsIndexRoute = AuthenticatedAuthsIndexRouteImport.update({
+  id: '/auths/',
+  path: '/auths/',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
+  '/auths/': typeof AuthenticatedAuthsIndexRoute
   '/jobs/': typeof AuthenticatedJobsIndexRoute
   '/personas/': typeof AuthenticatedPersonasIndexRoute
   '/settings/': typeof AuthenticatedSettingsIndexRoute
@@ -58,6 +65,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof AuthenticatedIndexRoute
+  '/auths': typeof AuthenticatedAuthsIndexRoute
   '/jobs': typeof AuthenticatedJobsIndexRoute
   '/personas': typeof AuthenticatedPersonasIndexRoute
   '/settings': typeof AuthenticatedSettingsIndexRoute
@@ -67,6 +75,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/_authenticated/': typeof AuthenticatedIndexRoute
+  '/_authenticated/auths/': typeof AuthenticatedAuthsIndexRoute
   '/_authenticated/jobs/': typeof AuthenticatedJobsIndexRoute
   '/_authenticated/personas/': typeof AuthenticatedPersonasIndexRoute
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
@@ -74,13 +83,20 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/jobs/' | '/personas/' | '/settings/' | '/threads/'
+  fullPaths:
+    | '/'
+    | '/auths/'
+    | '/jobs/'
+    | '/personas/'
+    | '/settings/'
+    | '/threads/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/jobs' | '/personas' | '/settings' | '/threads'
+  to: '/' | '/auths' | '/jobs' | '/personas' | '/settings' | '/threads'
   id:
     | '__root__'
     | '/_authenticated'
     | '/_authenticated/'
+    | '/_authenticated/auths/'
     | '/_authenticated/jobs/'
     | '/_authenticated/personas/'
     | '/_authenticated/settings/'
@@ -135,11 +151,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedJobsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
+    '/_authenticated/auths/': {
+      id: '/_authenticated/auths/'
+      path: '/auths'
+      fullPath: '/auths/'
+      preLoaderRoute: typeof AuthenticatedAuthsIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
   }
 }
 
 interface AuthenticatedRouteRouteChildren {
   AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
+  AuthenticatedAuthsIndexRoute: typeof AuthenticatedAuthsIndexRoute
   AuthenticatedJobsIndexRoute: typeof AuthenticatedJobsIndexRoute
   AuthenticatedPersonasIndexRoute: typeof AuthenticatedPersonasIndexRoute
   AuthenticatedSettingsIndexRoute: typeof AuthenticatedSettingsIndexRoute
@@ -148,6 +172,7 @@ interface AuthenticatedRouteRouteChildren {
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedIndexRoute: AuthenticatedIndexRoute,
+  AuthenticatedAuthsIndexRoute: AuthenticatedAuthsIndexRoute,
   AuthenticatedJobsIndexRoute: AuthenticatedJobsIndexRoute,
   AuthenticatedPersonasIndexRoute: AuthenticatedPersonasIndexRoute,
   AuthenticatedSettingsIndexRoute: AuthenticatedSettingsIndexRoute,

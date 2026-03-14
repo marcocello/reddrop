@@ -14,7 +14,7 @@ import {
   useReactTable,
   type VisibilityState,
 } from '@tanstack/react-table'
-import { Copy, MoreHorizontal, Pencil, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { DataTableColumnHeader, DataTablePagination, DataTableToolbar } from '@/components/data-table'
 import { Header } from '@/components/layout/header'
@@ -87,7 +87,6 @@ function buildDuplicatePersonaName(baseName: string, existingNames: Set<string>)
 
 export function PersonasPage() {
   const [personas, setPersonas] = useState<PersonaProfile[]>([])
-  const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [sorting, setSorting] = useState<SortingState>([{ id: 'name', desc: false }])
@@ -104,7 +103,6 @@ export function PersonasPage() {
   const [form, setForm] = useState<PersonaProfile>(buildDefaultPersona)
 
   const loadPersonas = useCallback(async (): Promise<void> => {
-    setLoading(true)
     try {
       const payload = await reddropApi.listPersonas()
       setPersonas(payload.personas)
@@ -115,8 +113,6 @@ export function PersonasPage() {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load personas'
       toast.error(message)
-    } finally {
-      setLoading(false)
     }
   }, [])
 
@@ -413,17 +409,6 @@ export function PersonasPage() {
         <div className='ms-auto flex items-center gap-2'>
           <Button size='sm' onClick={openCreateDialog}>
             Create persona
-          </Button>
-          <Button
-            variant='outline'
-            size='sm'
-            onClick={() => void loadPersonas()}
-            disabled={loading}
-            aria-label='Refresh personas'
-            title='Refresh personas'
-          >
-            <RefreshCw className='size-4' />
-            Refresh
           </Button>
         </div>
       </Header>

@@ -8,7 +8,7 @@ from typing import Any, Callable
 import praw
 
 from ..config.log import setup_logging
-from .llm_service import llm_service
+from .llm_service import LLMServiceError, llm_service
 from .settings_store import SettingsStore
 
 logger = setup_logging(__name__)
@@ -176,6 +176,10 @@ class RedditService:
             }}
             """
             response = llm_service.generate_response_sync(system_message, human_message)
+        except LLMServiceError:
+            raise
+
+        try:
             return json.loads(response)
         except Exception:
             tokens = [token.lower() for token in re.findall(r"[a-zA-Z0-9]+", content) if len(token) > 2]
@@ -259,6 +263,13 @@ class RedditService:
             Return JSON array only, example: ["query1", "query2"].
             """
             response = llm_service.generate_response_sync(system_message, human_message)
+        except LLMServiceError:
+            raise
+        except Exception:
+            topics = [item for item in content_analysis.get("topics", []) if isinstance(item, str) and item.strip()]
+            return topics[:5]
+
+        try:
             matches = re.findall(r"```json\\n(.*?)```", response, re.DOTALL)
             source = matches[0] if matches else response
             parsed = json.loads(source)

@@ -8,13 +8,6 @@ import { reddropApi, type SettingsPayload } from '@/lib/reddrop-api'
 import { toast } from 'sonner'
 
 const initialState: SettingsPayload = {
-  reddit: {
-    client_id: '',
-    client_secret: '',
-    user_agent: '',
-    username: '',
-    password: '',
-  },
   openrouter: {
     api_key: '',
     base_url: '',
@@ -42,21 +35,11 @@ function parseImportedSettings(content: string): SettingsPayload {
   if (!root) {
     throw new Error('Invalid settings file format')
   }
-
-  const reddit = toRecord(root.reddit)
   const openrouter = toRecord(root.openrouter)
-  if (!reddit || !openrouter) {
-    throw new Error('Settings file must include reddit and openrouter sections')
+  if (!openrouter) {
+    throw new Error('Settings file must include openrouter section')
   }
-
   return {
-    reddit: {
-      client_id: toStringValue(reddit.client_id, ''),
-      client_secret: toStringValue(reddit.client_secret, ''),
-      user_agent: toStringValue(reddit.user_agent, ''),
-      username: toStringValue(reddit.username, ''),
-      password: toStringValue(reddit.password, ''),
-    },
     openrouter: {
       api_key: toStringValue(openrouter.api_key, ''),
       base_url: toStringValue(openrouter.base_url, ''),
@@ -149,52 +132,9 @@ export function SettingsPage() {
       </Header>
 
       <Main className='space-y-6'>
-        <section className='space-y-3'>
-          <h2 className='text-xl font-semibold'>Reddit configuration</h2>
-          <div className='grid gap-3 md:grid-cols-2'>
-            <div className='space-y-2'>
-              <Label htmlFor='reddit-client-id'>Client ID</Label>
-              <Input
-                id='reddit-client-id'
-                value={settings.reddit.client_id}
-                onChange={(event) => setSettings((prev) => ({ ...prev, reddit: { ...prev.reddit, client_id: event.target.value } }))}
-              />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='reddit-client-secret'>Client Secret</Label>
-              <Input
-                id='reddit-client-secret'
-                value={settings.reddit.client_secret}
-                onChange={(event) => setSettings((prev) => ({ ...prev, reddit: { ...prev.reddit, client_secret: event.target.value } }))}
-              />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='reddit-user-agent'>User Agent</Label>
-              <Input
-                id='reddit-user-agent'
-                value={settings.reddit.user_agent}
-                onChange={(event) => setSettings((prev) => ({ ...prev, reddit: { ...prev.reddit, user_agent: event.target.value } }))}
-              />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor='reddit-username'>Username</Label>
-              <Input
-                id='reddit-username'
-                value={settings.reddit.username}
-                onChange={(event) => setSettings((prev) => ({ ...prev, reddit: { ...prev.reddit, username: event.target.value } }))}
-              />
-            </div>
-            <div className='space-y-2 md:col-span-2'>
-              <Label htmlFor='reddit-password'>Password</Label>
-              <Input
-                id='reddit-password'
-                type='password'
-                value={settings.reddit.password}
-                onChange={(event) => setSettings((prev) => ({ ...prev, reddit: { ...prev.reddit, password: event.target.value } }))}
-              />
-            </div>
-          </div>
-        </section>
+        <div>
+          <h2 className='text-2xl font-bold tracking-tight'>Settings</h2>
+        </div>
 
         <section className='space-y-3'>
           <h2 className='text-xl font-semibold'>OpenRouter configuration</h2>

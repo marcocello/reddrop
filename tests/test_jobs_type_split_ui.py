@@ -77,3 +77,21 @@ def test_reply_jobs_show_na_topic_in_table_and_sheet() -> None:
     assert "if (job.job_type === 'reply') return 'N/A'" in source
     assert "const topicLabel = displayJobTopic(row.original)" in source
     assert "selectedJob.job_type === 'reply' ? 'N/A' : selectedJob.topic" in source
+
+
+def test_search_form_hides_replies_per_iteration_field() -> None:
+    source = Path("frontend/src/features/jobs/index.tsx").read_text(encoding="utf-8")
+    assert "Label htmlFor={`${prefix}-replies-per-iteration`}>Replies per iteration</Label>" in source
+    assert "{form.job_type === 'reply' ? (" in source
+    assert "id={`${prefix}-replies-per-iteration`}" in source
+
+
+def test_run_interval_uses_simple_frequency_dropdown() -> None:
+    source = Path("frontend/src/features/jobs/index.tsx").read_text(encoding="utf-8")
+    assert "Label htmlFor={`${prefix}-max-runtime-minutes`}>Run frequency</Label>" in source
+    assert "SelectTrigger id={`${prefix}-max-runtime-minutes`}" in source
+    assert "SelectItem value='60'>Every 1 hour</SelectItem>" in source
+    assert "SelectItem value='360'>Every 6 hours</SelectItem>" in source
+    assert "SelectItem value='720'>Every 12 hours</SelectItem>" in source
+    assert "SelectItem value='1440'>Every 24 hours</SelectItem>" in source
+    assert "Run interval minutes" not in source

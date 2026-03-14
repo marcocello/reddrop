@@ -24,6 +24,13 @@ def test_jobs_ui_has_type_and_source_controls() -> None:
     assert "Final name:" in source
     assert "if (job.job_type === 'reply') return 'N/A'" in source
     assert "Label htmlFor={`${prefix}-min-similarity-score`}>Minimum similarity score</Label>" in source
+    assert "{form.job_type === 'reply' ? (" in source
+    assert "Label htmlFor={`${prefix}-replies-per-iteration`}>Replies per iteration</Label>" in source
+    assert "Label htmlFor={`${prefix}-max-runtime-minutes`}>Run frequency</Label>" in source
+    assert "SelectItem value='60'>Every 1 hour</SelectItem>" in source
+    assert "SelectItem value='360'>Every 6 hours</SelectItem>" in source
+    assert "SelectItem value='720'>Every 12 hours</SelectItem>" in source
+    assert "SelectItem value='1440'>Every 24 hours</SelectItem>" in source
 
 
 def test_reply_jobs_store_empty_topic() -> None:

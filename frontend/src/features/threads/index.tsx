@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import {
   type ColumnDef,
   type ColumnOrderState,
@@ -15,7 +16,7 @@ import {
   useReactTable,
   type VisibilityState,
 } from '@tanstack/react-table'
-import { MoreHorizontal, RefreshCw } from 'lucide-react'
+import { ChevronDown, MoreHorizontal, RefreshCw } from 'lucide-react'
 import { DataTableColumnHeader, DataTablePagination, DataTableToolbar } from '@/components/data-table'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
@@ -50,7 +51,13 @@ import { reddropApi, type Job, type ThreadItem } from '@/lib/reddrop-api'
 
 const ACTIONS_COLUMN_ID = 'actions'
 const JOB_COLUMN_ID = 'job'
-const AUTO_REFRESH_INTERVAL_MS = 2000
+const AUTO_REFRESH_OPTIONS = [
+  { value: 0, label: 'Off', menuLabel: 'Auto-refresh off' },
+  { value: 30, label: 'Every 30s', menuLabel: 'Every 30s' },
+  { value: 60, label: 'Every 1m', menuLabel: 'Every 1m' },
+  { value: 300, label: 'Every 5m', menuLabel: 'Every 5m' },
+  { value: 900, label: 'Every 15m', menuLabel: 'Every 15m' },
+] as const
 
 const arrayFilterFn: FilterFn<ThreadItem> = (row, columnId, value) => {
   const selected = Array.isArray(value) ? (value as string[]) : []
@@ -104,6 +111,7 @@ export function ThreadsPage() {
   const [threads, setThreads] = useState<ThreadItem[]>([])
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(false)
+  const [autoRefreshSeconds, setAutoRefreshSeconds] = useState<number>(30)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [selectedThread, setSelectedThread] = useState<ThreadItem | null>(null)
   const [replyInput, setReplyInput] = useState('')
@@ -159,21 +167,39 @@ export function ThreadsPage() {
   }, [loadJobs, loadThreads])
 
   useEffect(() => {
+    if (autoRefreshSeconds <= 0) {
+      return
+    }
     const timer = window.setInterval(() => {
       void loadThreads()
-    }, AUTO_REFRESH_INTERVAL_MS)
+    }, autoRefreshSeconds * 1000)
     return () => window.clearInterval(timer)
-  }, [loadThreads])
+  }, [autoRefreshSeconds, loadThreads])
+
+  const autoRefreshLabel = useMemo(() => {
+    const selected = AUTO_REFRESH_OPTIONS.find((option) => option.value === autoRefreshSeconds)
+    return selected?.label ?? 'Off'
+  }, [autoRefreshSeconds])
 
   useEffect(() => {
     setReplyInput(selectedThread?.reply ?? '')
   }, [selectedThread])
 
   const resolvePersonaForThread = useCallback((thread: ThreadItem): string | null => {
+    const linkedPersona = thread.reply_personas?.find((item) => item.trim().length > 0)?.trim() ?? null
+    if (linkedPersona) {
+      return linkedPersona
+    }
+
     const job = jobs.find((item) => item.id === thread.job_id)
     const persona = job?.personas?.find((item) => item.trim().length > 0)?.trim() ?? null
     if (persona) {
       return persona
+    }
+    const linkedReplyName = thread.reply_job_name?.trim()
+    if (linkedReplyName) {
+      toast.error(`No persona configured for reply job ${linkedReplyName}. Edit that Reply job and assign at least one persona.`)
+      return null
     }
     const jobRef = job?.name ?? thread.job_name
     toast.error(`No persona configured for job ${jobRef}. Edit the job and assign at least one persona.`)
@@ -190,7 +216,7 @@ export function ThreadsPage() {
     try {
       const replyDraft = replyInput.trim()
       const updated = await reddropApi.createThreadReply(
-        thread.job_id,
+        thread.reply_job_id ?? thread.job_id,
         thread.subreddit,
         thread.thread_id,
         persona,
@@ -213,7 +239,7 @@ export function ThreadsPage() {
     setBusyKey(sendKey)
     try {
       const updated = await reddropApi.sendThreadReply(
-        thread.job_id,
+        thread.reply_job_id ?? thread.job_id,
         thread.subreddit,
         thread.thread_id
       )
@@ -259,6 +285,14 @@ export function ThreadsPage() {
             <span className='block truncate text-xs text-muted-foreground leading-tight' title={row.original.job_name}>
               ({row.original.job_name})
             </span>
+            {row.original.reply_job_name ? (
+              <span
+                className='block truncate text-[11px] text-muted-foreground leading-tight'
+                title={`Reply: ${row.original.reply_job_name}`}
+              >
+                Reply: {row.original.reply_job_name}
+              </span>
+            ) : null}
           </div>
         ),
       },
@@ -458,17 +492,40 @@ export function ThreadsPage() {
     <>
       <Header fixed>
         <div className='ms-auto flex items-center gap-2'>
-          <Button
-            variant='outline'
-            size='sm'
-            onClick={() => void loadThreads()}
-            disabled={loading}
-            aria-label='Refresh threads'
-            title='Refresh threads'
-          >
-            <RefreshCw className='size-4 animate-spin [animation-duration:2s]' />
-            Refresh
+          <Button size='sm' asChild>
+            <Link to='/jobs'>Create job</Link>
           </Button>
+          <div className='inline-flex h-8 items-center overflow-hidden rounded-md border'>
+            <Button
+              variant='ghost'
+              size='icon'
+              className='h-full w-8 rounded-none border-r'
+              onClick={() => void loadThreads()}
+              disabled={loading}
+              aria-label='Manual refresh threads'
+              title='Manual refresh threads'
+            >
+              <RefreshCw className={cn('size-4', autoRefreshSeconds > 0 && 'animate-spin [animation-duration:2s]')} />
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant='ghost' size='sm' aria-label='Auto-refresh threads' className='h-full rounded-none gap-2 px-3'>
+                  <ChevronDown className='size-4' />
+                  <span>{autoRefreshLabel}</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align='end'>
+                {AUTO_REFRESH_OPTIONS.map((option) => (
+                  <DropdownMenuItem key={option.value} onSelect={() => setAutoRefreshSeconds(option.value)}>
+                    <span className='mr-3 inline-flex w-4 justify-center text-foreground'>
+                      {autoRefreshSeconds === option.value ? '●' : ''}
+                    </span>
+                    {option.menuLabel}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </Header>
 

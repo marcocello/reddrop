@@ -11,12 +11,24 @@ from .settings_store import SettingsStore
 logger = setup_logging(__name__)
 
 
+class LLMServiceError(RuntimeError):
+    pass
+
+
+class LLMUnavailableError(LLMServiceError):
+    pass
+
+
+class LLMRequestError(LLMServiceError):
+    pass
+
+
 class LLMService:
     DEFAULT_REQUEST_TIMEOUT_SECONDS = 20.0
 
     def __init__(self) -> None:
         self.client: AsyncOpenAI | None = None
-        self.client_type = "demo"
+        self.client_type = "unavailable"
         self.model_name: str | None = None
         self._client_loop_id: int | None = None
         self.temperature = float(os.getenv("LLM_TEMPERATURE", "0.7"))
@@ -53,16 +65,16 @@ class LLMService:
                 return
 
             self.client = None
-            self.client_type = "demo"
+            self.client_type = "unavailable"
             self.model_name = None
             self._client_loop_id = None
-            logger.warning("OpenRouter key not found. LLM service is running in demo fallback mode.")
+            logger.warning("OpenRouter key not found. LLM service is unavailable.")
         except Exception:
             self.client = None
-            self.client_type = "demo"
+            self.client_type = "unavailable"
             self.model_name = None
             self._client_loop_id = None
-            logger.exception("Failed to initialize OpenRouter client. Falling back to demo mode.")
+            logger.exception("Failed to initialize OpenRouter client.")
 
     @staticmethod
     def _openrouter_headers() -> dict[str, str]:
@@ -112,12 +124,13 @@ class LLMService:
         message = getattr(choice, "message", None)
         raw_content = getattr(message, "content", "")
         content = self._normalize_content(raw_content).strip()
-        return content or self._get_demo_response(human_message)
+        if not content:
+            raise LLMRequestError("OpenRouter returned empty content.")
+        return content
 
     async def generate_response(self, system_message: str, human_message: str) -> str:
         if not self.client:
-            logger.info("Generating demo fallback response because OpenRouter is not configured.")
-            return self._get_demo_response(human_message)
+            raise LLMUnavailableError("OpenRouter is not configured. Set OPENROUTER_API_KEY.")
 
         self._ensure_client_for_current_loop()
 
@@ -132,16 +145,13 @@ class LLMService:
                     try:
                         return await self._openrouter_completion(system_message, human_message)
                     except Exception as retry_exc:
-                        logger.error(
-                            "OpenRouter request retry failed (%s). Returning demo fallback response.",
-                            type(retry_exc).__name__,
-                        )
-                        return self._get_demo_response(human_message)
-            logger.error("OpenRouter request failed (%s). Returning demo fallback response.", type(exc).__name__)
-            return self._get_demo_response(human_message)
+                        logger.error("OpenRouter request retry failed (%s).", type(retry_exc).__name__)
+                        raise LLMRequestError(f"OpenRouter request retry failed: {retry_exc}") from retry_exc
+            logger.error("OpenRouter request failed (%s).", type(exc).__name__)
+            raise LLMRequestError(f"OpenRouter request failed: {exc}") from exc
         except Exception as exc:
-            logger.error("OpenRouter request failed (%s). Returning demo fallback response.", type(exc).__name__)
-            return self._get_demo_response(human_message)
+            logger.error("OpenRouter request failed (%s).", type(exc).__name__)
+            raise LLMRequestError(f"OpenRouter request failed: {exc}") from exc
 
     @staticmethod
     def _normalize_content(raw_content: Any) -> str:
@@ -170,22 +180,6 @@ class LLMService:
             return loop.run_until_complete(self.generate_response(system_message, human_message))
         finally:
             loop.close()
-
-    def _get_demo_response(self, human_message: str) -> str:
-        lowered = human_message.lower()
-        if "generate" in lowered or "comment" in lowered:
-            return (
-                "Great discussion. The tradeoff here depends on how quickly you need feedback versus execution speed. "
-                "Has anyone here tested both approaches recently?"
-            )
-        if "adapt" in lowered:
-            return (
-                "Interesting angle. I have seen similar patterns where practical examples improve response quality. "
-                "What outcome are you optimizing for first?"
-            )
-        return (
-            "Thanks for sharing this. I think the strongest next step is testing one concrete tactic and measuring replies."
-        )
 
     def is_available(self) -> bool:
         return self.client is not None

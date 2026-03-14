@@ -1,9 +1,12 @@
 export type JobType = 'search' | 'reply'
+export type SocialPlatform = 'reddit' | 'linkedin'
 
 export type Job = {
   id: string
   name: string
   job_type: JobType
+  social: SocialPlatform
+  auth_id?: string | null
   source_job_id?: string | null
   topic: string
   min_similarity_score: number
@@ -43,7 +46,15 @@ export type JobRuntimeLog = {
 export type ThreadItem = {
   job_id: string
   job_name: string
+  social?: SocialPlatform
   topic: string
+  search_job_id?: string
+  search_job_name?: string
+  reply_job_id?: string | null
+  reply_job_name?: string | null
+  linked_reply_job_ids?: string[]
+  linked_reply_job_names?: string[]
+  reply_personas?: string[]
   thread_id: string
   title: string
   subreddit: string
@@ -70,6 +81,8 @@ export type ThreadListResponse = {
 export type UpsertJobPayload = {
   name: string
   job_type: JobType
+  social: SocialPlatform
+  auth_id?: string | null
   source_job_id?: string | null
   topic: string
   min_similarity_score: number
@@ -97,12 +110,29 @@ export type UpsertPersonasPayload = {
   personas: PersonaProfile[]
 }
 
-export type RedditSettings = {
-  client_id: string
-  client_secret: string
-  user_agent: string
-  username: string
-  password: string
+export type AuthProfile = {
+  id: string
+  name: string
+  social: SocialPlatform
+  reddit_client_id: string
+  reddit_client_secret: string
+  reddit_user_agent: string
+  reddit_username: string
+  reddit_password: string
+  linkedin_email: string
+  linkedin_password: string
+  linkedin_headless: string
+  linkedin_user_data_dir: string
+  linkedin_wait_seconds: string
+}
+
+export type AuthsResponse = {
+  auths: AuthProfile[]
+  source?: string | null
+}
+
+export type UpsertAuthsPayload = {
+  auths: AuthProfile[]
 }
 
 export type OpenRouterSettings = {
@@ -114,8 +144,14 @@ export type OpenRouterSettings = {
   timeout_seconds: string
 }
 
+export type LinkedinLoginResponse = {
+  status: 'ok'
+  command: string[]
+  stdout: string
+  stderr: string
+}
+
 export type SettingsPayload = {
-  reddit: RedditSettings
   openrouter: OpenRouterSettings
 }
 
@@ -214,6 +250,16 @@ export const reddropApi = {
     request<PersonasResponse>('/personas', {
       method: 'PUT',
       body: JSON.stringify(payload),
+    }),
+  listAuths: () => request<AuthsResponse>('/auths'),
+  saveAuths: (payload: UpsertAuthsPayload) =>
+    request<AuthsResponse>('/auths', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  runLinkedinAuthLogin: (authRef: string) =>
+    request<LinkedinLoginResponse>(`/auths/${encodeURIComponent(authRef)}/linkedin/login`, {
+      method: 'POST',
     }),
   listSettings: () => request<SettingsPayload>('/settings'),
   saveSettings: (payload: SettingsPayload) =>

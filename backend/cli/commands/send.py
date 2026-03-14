@@ -19,7 +19,17 @@ class SendDependencies:
     conversation_model: Any
     search_artifact_model: Any
     now_fn: Any
+    linkedin_service_cls: Any | None = None
+    job_store_factory: Any | None = None
     should_stop: Callable[[], bool] = _never_stop
+    prepare_job: Callable[[Any], None] | None = None
+
+
+def _resolve_social(raw: object) -> str:
+    value = str(raw or "").strip().lower()
+    if value == "linkedin":
+        return "linkedin"
+    return "reddit"
 
 
 def _resolve_search_file(search_file: str, runs_dir: Path) -> Path | None:
@@ -53,8 +63,27 @@ def handle(args, emit, error, deps: SendDependencies) -> int:
     if artifact is None:
         return error(f"Invalid search artifact: {search_path.name}")
 
-    deps.logger.info("Sending replies from file %s.", search_path.name)
-    reddit_service = deps.reddit_service_cls()
+    social = "reddit"
+    job = None
+    if deps.job_store_factory is not None:
+        try:
+            job = deps.job_store_factory().get_job_by_id(artifact.id)
+            if job is not None:
+                social = _resolve_social(getattr(job, "social", "reddit"))
+        except Exception:
+            social = "reddit"
+            job = None
+
+    if deps.prepare_job is not None and job is not None:
+        deps.prepare_job(job)
+
+    deps.logger.info("Sending replies from file %s using %s.", search_path.name, social)
+    if social == "linkedin":
+        if deps.linkedin_service_cls is None:
+            return error("LinkedIn service is not configured.")
+        post_service = deps.linkedin_service_cls()
+    else:
+        post_service = deps.reddit_service_cls()
 
     updated_conversations: list[Any] = []
     sent_count = 0
@@ -75,7 +104,7 @@ def handle(args, emit, error, deps: SendDependencies) -> int:
             updated_conversations.append(updated)
             continue
 
-        if reddit_service.post_comment(thread_id=updated.thread_id, comment_text=updated.reply):
+        if post_service.post_comment(thread_id=updated.thread_id, comment_text=updated.reply):
             updated.user_has_commented = True
             sent_count += 1
 

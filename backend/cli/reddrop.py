@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
 
 from ..config.log import setup_logging
-from ..models import Conversation, SearchArtifact
+from ..models import Conversation, PeriodicSearchJob, SearchArtifact
+from ..services.auth_store import AuthStore
 from ..services.job_config_store import JobConfigStore
 from ..services.persona_store import PersonaStore
 from ..services.reply_generation_service import ReplyGenerationService
+from ..services.linkedin_service import LinkedinService
 from ..services.reddit_service import RedditService
 from ..services.search_storage import SearchStorage
 from .commands import add as add_command
@@ -48,6 +51,54 @@ def _search_storage() -> SearchStorage:
     return SearchStorage(DEFAULT_RUNS_DIR)
 
 
+def _auth_store() -> AuthStore:
+    return AuthStore([DEFAULT_HOME / "auths.json"])
+
+
+def _resolve_social(raw: object) -> str:
+    value = str(raw or "").strip().lower()
+    if value == "linkedin":
+        return "linkedin"
+    return "reddit"
+
+
+def _apply_auth_to_env(job: PeriodicSearchJob) -> None:
+    auth_id = (job.auth_id or "").strip()
+    if not auth_id:
+        raise RuntimeError(f"auth_id is required for job {job.name}")
+
+    auth = _auth_store().get_auth(auth_id)
+    if auth is None:
+        raise RuntimeError(f"Auth not found for job {job.name}: {auth_id}")
+
+    auth_social = _resolve_social(auth.social)
+    job_social = _resolve_social(job.social)
+    if auth_social != job_social:
+        raise RuntimeError(f"Auth social mismatch for job {job.name}: {auth_social} != {job_social}")
+
+    if job_social == "linkedin":
+        os.environ["LINKEDIN_EMAIL"] = auth.linkedin_email.strip()
+        os.environ["LINKEDIN_PASSWORD"] = auth.linkedin_password.strip()
+        os.environ["LINKEDIN_HEADLESS"] = auth.linkedin_headless.strip() or "true"
+        os.environ["LINKEDIN_USER_DATA_DIR"] = auth.linkedin_user_data_dir.strip()
+        os.environ["LINKEDIN_WAIT_SECONDS"] = auth.linkedin_wait_seconds.strip() or "120"
+        return
+
+    client_id = auth.reddit_client_id.strip()
+    client_secret = auth.reddit_client_secret.strip()
+    user_agent = auth.reddit_user_agent.strip()
+    if client_id:
+        os.environ["REDDIT_CLIENT_ID"] = client_id
+    if client_secret:
+        os.environ["REDDIT_CLIENT_SECRET"] = client_secret
+    if user_agent:
+        os.environ["REDDIT_USER_AGENT"] = user_agent
+    elif not (os.getenv("REDDIT_USER_AGENT") or "").strip():
+        os.environ["REDDIT_USER_AGENT"] = "Reddrop:v1.0"
+    os.environ["REDDIT_USERNAME"] = auth.reddit_username.strip()
+    os.environ["REDDIT_PASSWORD"] = auth.reddit_password.strip()
+
+
 def _positive_int(raw: str) -> int:
     try:
         value = int(raw)
@@ -74,7 +125,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     add = subparsers.add_parser("add", help="Create or update the job configuration.")
     add.add_argument("--name", required=True)
-    add.add_argument("--topic", required=True)
+    add.add_argument("--job-type", default="search", choices=["search", "reply"])
+    add.add_argument("--auth-id")
+    add.add_argument("--source-job-id")
+    add.add_argument("--topic", default="")
+    add.add_argument("--social", default="reddit", choices=["reddit", "linkedin"])
     add.add_argument("--time-filter", default=DEFAULT_TIME_FILTER, choices=["hour", "day", "week", "month", "year", "all"])
     add.add_argument("--subreddit-limit", type=int, default=DEFAULT_SUBREDDIT_LIMIT)
     add.add_argument("--threads-limit", type=int, default=DEFAULT_THREADS_LIMIT)
@@ -83,7 +138,7 @@ def _build_parser() -> argparse.ArgumentParser:
     add.add_argument("--max-runtime-minutes", type=_positive_int, default=DEFAULT_MAX_RUNTIME_MINUTES)
     add.add_argument("--personas", nargs="*", default=[])
 
-    search = subparsers.add_parser("search", help="Search Reddit with the saved job configuration.")
+    search = subparsers.add_parser("search", help="Search configured social platforms with saved job configuration.")
     search.add_argument("name", nargs="?")
 
     reply = subparsers.add_parser("reply", help="Generate replies from a search artifact.")
@@ -177,6 +232,26 @@ def main(argv: list[str] | None = None) -> int:
     store = _job_store()
 
     if args.command == "add":
+        if args.job_type == "search":
+            if not str(args.topic).strip():
+                return _error("--topic is required for search jobs.")
+            if not str(args.auth_id or "").strip():
+                return _error("--auth-id is required for search jobs.")
+        if args.job_type == "reply":
+            if not str(args.source_job_id or "").strip():
+                return _error("--source-job-id is required for reply jobs.")
+            if not args.personas:
+                return _error("--personas is required for reply jobs.")
+            source = store.get_job_by_id(str(args.source_job_id))
+            if source is None:
+                return _error(f"Source search job not found: {args.source_job_id}")
+            if source.job_type != "search":
+                return _error(f"Source job must be search type: {source.name}")
+            if not str(source.auth_id or "").strip():
+                return _error(f"Source search job has no auth_id configured: {source.name}")
+            args.social = source.social
+            args.auth_id = source.auth_id
+        args.topic = str(args.topic or "").strip()
         return add_command.handle(
             args,
             store,
@@ -189,9 +264,11 @@ def main(argv: list[str] | None = None) -> int:
             logger=logger,
             search_storage_factory=_search_storage,
             reddit_service_cls=RedditService,
+            linkedin_service_cls=LinkedinService,
             conversation_model=Conversation,
             search_artifact_model=SearchArtifact,
             now_fn=search_command.utc_now,
+            prepare_job=_apply_auth_to_env,
         )
         return search_command.handle(args, store, _emit, _error, deps)
     if args.command == "reply":
@@ -212,9 +289,12 @@ def main(argv: list[str] | None = None) -> int:
             runs_dir=DEFAULT_RUNS_DIR,
             search_storage_cls=SearchStorage,
             reddit_service_cls=RedditService,
+            linkedin_service_cls=LinkedinService,
+            job_store_factory=_job_store,
             conversation_model=Conversation,
             search_artifact_model=SearchArtifact,
             now_fn=send_command.utc_now,
+            prepare_job=_apply_auth_to_env,
         )
         return send_command.handle(args, _emit, _error, deps)
     if args.command == "completion":

@@ -31,6 +31,12 @@ And the UI shows `Name` as two adjacent fields (editable prefix + locked suffix)
 And reply jobs do not keep a topic value (shown as `N/A` in job views)
 And reply jobs allow a configurable minimum similarity score
 
+## Scenario: search form keeps only relevant controls and simpler run frequency
+Given the user configures a `search` job in the create modal  
+When the form is rendered  
+Then `Replies per iteration` is not shown for search jobs  
+And run cadence uses a `Run frequency` dropdown with fixed options (`Every 1 hour`, `Every 6 hours`, `Every 12 hours`, `Every 24 hours`)
+
 ## Scenario: discovery logs keep all five steps
 Given discovery runs even with zero candidate threads  
 When ranking has no candidates  

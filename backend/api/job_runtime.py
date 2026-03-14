@@ -7,6 +7,10 @@ from typing import Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from ..config.log import setup_logging
+
+logger = setup_logging(__name__)
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -128,6 +132,10 @@ class JobRuntimeManager:
     def should_stop(self, name: str) -> bool:
         with self._lock:
             return self._is_stop_requested_locked(name)
+
+    def append_log(self, name: str, message: str) -> None:
+        with self._lock:
+            self._append_log_locked(name, message)
 
     def activate(self, name: str, *, run_now: bool = False) -> dict[str, object]:
         normalized_name = name.strip()
@@ -355,6 +363,7 @@ class JobRuntimeManager:
         state.logs.append(RuntimeLogEntry(at=_now_iso(), message=message))
         if len(state.logs) > self.MAX_LOGS_PER_JOB:
             state.logs = state.logs[-self.MAX_LOGS_PER_JOB :]
+        logger.info("[job=%s] %s", normalized_name, message)
 
     def _is_stop_requested_locked(self, name: str) -> bool:
         normalized_name = name.strip()

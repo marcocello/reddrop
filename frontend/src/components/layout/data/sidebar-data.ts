@@ -1,4 +1,4 @@
-import { Command, ListTodo, PlayCircle, Settings, Users } from 'lucide-react'
+import { Command, KeyRound, ListTodo, PlayCircle, Settings, Users } from 'lucide-react'
 import { type SidebarData } from '../types'
 
 export const sidebarData: SidebarData = {
@@ -11,18 +11,13 @@ export const sidebarData: SidebarData = {
     {
       name: 'Reddrop',
       logo: Command,
-      plan: 'Search + Threads + Settings',
+      plan: 'Social Automation',
     },
   ],
   navGroups: [
     {
-      title: 'Reddrop',
+      title: 'Workflows',
       items: [
-        {
-          title: 'Personas',
-          url: '/personas',
-          icon: Users,
-        },
         {
           title: 'Jobs',
           url: '/jobs',
@@ -32,6 +27,21 @@ export const sidebarData: SidebarData = {
           title: 'Threads',
           url: '/threads',
           icon: ListTodo,
+        },
+        {
+          title: 'Personas',
+          url: '/personas',
+          icon: Users,
+        },
+      ],
+    },
+    {
+      title: 'Configuration',
+      items: [
+        {
+          title: 'Auths',
+          url: '/auths',
+          icon: KeyRound,
         },
         {
           title: 'Settings',

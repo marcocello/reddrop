@@ -1,7 +1,7 @@
 # Reddrop Architecture
 
 ## Components
-- `./reddrop`: single CLI entrypoint.
+- `backend/reddrop`: executable CLI wrapper entrypoint (invokes `backend.cli.reddrop`).
 - `backend/cli/reddrop.py`: parser, completion, and command dispatch wiring.
 - `backend/cli/commands/add.py`: `add` command handler.
 - `backend/cli/commands/search.py`: `search` command handler.
@@ -10,7 +10,11 @@
 - `backend/api/main.py`: FastAPI layer exposing command-equivalent operations.
 - `backend/api/job_runtime.py`: in-memory job process manager for start/stop/restart status.
 - `backend/services/`: discovery, persistence, LLM, and persona access.
-- `backend/services/settings_store.py`: load/save `.env` runtime settings for Reddit/OpenRouter integration.
+- `backend/services/reddit_service.py`: Reddit discovery and posting integration.
+- `backend/services/linkedin_service.py`: LinkedIn headless discovery and posting integration.
+- `backend/services/settings_store.py`: load/save `settings.yaml` runtime LLM settings (`openrouter`) and sync values into process env.
+- `backend/services/auth_store.py`: load/save auth catalog (`.reddrop/auths.json`) for Reddit/LinkedIn credential profiles.
+- `app/linkedin_scraper.py`: Playwright-based LinkedIn login bootstrap command used by auth-triggered login flow.
 - `backend/config/log.py`: shared logging configuration and `setup_logging`.
 - `backend/models.py`: job/search data contracts.
 - `frontend/`: React + Vite dashboard derived from `satnaing/shadcn-admin`, trimmed to jobs/personas/threads/settings views.
@@ -30,17 +34,23 @@
 - Job config file: `.reddrop/jobs_config.json`.
 - Search artifacts: `.reddrop/runs/search_<job_id_prefix8>.json` (one file per job).
 - Job `id` values are UUIDs generated automatically.
-- Job entries store `id`, `name`, `job_type` (`search` or `reply`), optional `source_job_id`, `topic`, `time_filter`, `subreddit_limit`, `threads_limit`, `replies_per_iteration`, `max_runtime_minutes`, and `personas`; `name` is a no-space identifier (`[A-Za-z0-9_-]+`).
+- Job entries store `id`, `name`, `job_type` (`search` or `reply`), `social` (`reddit` or `linkedin`), `auth_id`, optional `source_job_id`, `topic`, `time_filter`, `subreddit_limit`, `threads_limit`, `replies_per_iteration`, `max_runtime_minutes`, and `personas`; `name` is a no-space identifier (`[A-Za-z0-9_-]+`).
 - Search artifact payload includes `id` (job id), `created_at`, `updated_at`, and merged `conversations`.
 - Conversation rows include `reply` and `user_has_commented`, so search/reply/send state is unified in one file per job.
 
 ## Integration Rules
-- Discovery reuses `backend.services.reddit_service.RedditService.discover_relevant_threads`.
+- Discovery routes by job `social`:
+  - `reddit` uses `backend.services.reddit_service.RedditService.discover_relevant_threads`.
+  - `linkedin` uses `backend.services.linkedin_service.LinkedinService.discover_relevant_threads`.
 - `search` first writes an initialized artifact (empty conversations) and then updates the same job file on completion.
 - Conversation merge behavior is keyed by (`thread_id`, `subreddit`) with incoming matches replacing previous entries.
 - `search` accepts an optional job `name` positional argument; without it, all jobs are executed.
 - Discovery tuning flags are accepted by `add` and persisted in job config.
 - `search` does not accept discovery tuning flags and always uses job-config values.
+- Reply jobs must match the social platform of their linked source search job.
+- Search jobs require `auth_id`, and auth social must match job social.
+- Reply jobs inherit `auth_id` from their linked source search job.
+- Search/send runtime paths hydrate platform credentials from auth profiles into process env before service instantiation.
 - Runtime job execution is type-split:
   - `search` jobs run search + rank only.
   - `reply` jobs run reply generation only, using artifacts from their linked `source_job_id` search job.
@@ -50,9 +60,10 @@
 - `reply` selection excludes conversations that already have a non-empty `reply`, applies a minimum similarity threshold (`semantic_similarity >= 0.35`), and reranks remaining entries by `semantic_similarity` descending before taking top `--replies`.
 - `search` persistence is handled by `SearchStorage` (`backend/services/search_storage.py`).
 - `SearchStorage` provides file locking (`flock`) + atomic replace writes for all search/reply/send updates.
+- `JobConfigStore` now also uses file locking (`flock`) + atomic replace writes for `.reddrop/jobs_config.json`.
 - `ReplyGenerationService` extracts tone/style from thread title/body during `reply` and applies it to final reply generation.
 - Discovery (`search`) does not perform tone/style extraction.
-- `send` uses `RedditService.post_comment` and updates `user_has_commented` in the same `search_*.json` artifact.
+- `send` routes posting by job `social` (`RedditService.post_comment` or `LinkedinService.post_comment`) and updates `user_has_commented` in the same `search_*.json` artifact.
 - `reply` emits `search_file`, `reply_file`, `generated`, `total_with_replies`.
 - `send` emits `search_file`, `reply_file`, `sent`, `already_commented`, `candidates`, `total`.
 - FastAPI exposes `/health`, `/jobs/add`, `/search`, `/reply`, and `/send`, using the same command handlers/dependencies as CLI.
@@ -60,19 +71,24 @@
   - `POST /jobs`, `DELETE /jobs/{job}`, `POST /jobs/{job}/start`, `POST /jobs/{job}/stop`
   - `PUT /jobs/{job}` exists but returns `405` because jobs are immutable after creation
   - `GET /personas`, `PUT /personas` for persona catalog management
-  - `GET /settings`, `PUT /settings` for runtime Reddit/OpenRouter settings management
-  - `GET /threads` with JSON-artifact filters (`job_id`, `job_name`, `subreddit`, `min_similarity`, `only_open`, `has_reply`, paging)
-  - `POST /threads/{job}/{subreddit}/{thread_id}/reply` and `POST /threads/{job}/{subreddit}/{thread_id}/send` for per-thread actions
+  - `GET /auths`, `PUT /auths` for auth catalog management (`reddit`/`linkedin` auth objects)
+  - `POST /auths/{auth}/linkedin/login` to run the LinkedIn login bootstrap command (`python -m app.linkedin_scraper login ...`) using selected auth runtime fields
+  - `GET /settings`, `PUT /settings` for runtime LLM/OpenRouter settings management only
+  - `GET /threads` with JSON-artifact filters (`job_id`, `job_name`, `subreddit`, `min_similarity`, `only_open`, `has_reply`, paging), backed by an in-memory artifact cache keyed by run/job-config file snapshots
+  - `POST /threads/{job}/{subreddit}/{thread_id}/reply` and `POST /threads/{job}/{subreddit}/{thread_id}/send` for per-thread actions; `{job}` accepts either search-job or linked reply-job references
 - FastAPI also exposes job lifecycle and artifact browsing endpoints (`/jobs`, `/jobs/status`, `/jobs/{name}/start|stop|restart`, `/artifacts/search*`, `/artifacts/reply*`) for frontend usage.
-- Job start/restart actions spawn CLI `search` subprocesses; stop issues process termination and status is tracked in-memory.
+- Job start/restart actions invoke in-process command handlers through the runtime manager; stop is cooperative cancellation via in-memory stop flags.
 - Autonomous runtime jobs do not auto-send replies; send remains an explicit action.
 - CLI completion scripts (`bash`, `zsh`) resolve search-name candidates from configured job names and must work for both `reddrop` and `./reddrop`.
 - Discovery progress is emitted via standard info logs from CLI/services.
 - Discovery logs include output summaries for analysis intent/topics/keywords, discovered subreddits, generated queries, and candidate thread counts.
-- `backend/services/llm_service.py` uses OpenRouter (`OPENROUTER_*`) and falls back to deterministic demo responses when missing/unavailable.
+- Job runtime logs are mirrored to both:
+  - terminal output (for operator visibility),
+  - in-memory job-status log stream (`/jobs/{name}/status`) for the frontend job panel.
+- `backend/services/llm_service.py` uses OpenRouter (`OPENROUTER_*`) and treats missing/unavailable LLM as a hard runtime failure (no demo fallback generation).
 - Modules that log should use `logger = setup_logging(__name__)` for a shared formatter/level policy.
 - Frontend consumes API only; no business logic is implemented in UI components.
-- Jobs UI supports create + lifecycle controls (activate/deactivate/start/stop/delete) with explicit job type selection (`search`/`reply`) and source search-job linkage for reply jobs; existing jobs are read-only in details view.
+- Jobs UI supports create + lifecycle controls (activate/deactivate/start/stop/delete) with explicit job type selection (`search`/`reply`), social selection (`reddit`/`linkedin`), and source search-job linkage for reply jobs; existing jobs are read-only in details view.
 - Frontend threads/reply views are driven by `GET /threads` plus thread-level reply/send actions, rather than direct artifact file selection.
 - Table-based frontend views use shadcn-style toolbar + bordered table sections; create actions use modal dialogs while row details/editors open in right-side sheets.
 - Destructive frontend actions (job/persona deletion) use explicit confirmation dialogs before API calls are executed.
@@ -80,8 +96,10 @@
 - Sortable table headers trigger direct click-based asc/desc toggling (no header sort context menu), and table columns support drag-based reordering via TanStack `columnOrder` state.
 - Threads UI does not expose a free-form persona input; reply actions resolve persona from the selected job configuration.
 - Threads sidebar metadata surfaces similarity/score/comments/created with badge status, fixed-height body content, and reply input actions below the input.
+- Threads rows expose explicit search↔reply linkage metadata (`reply_job_id`, `reply_job_name`, `reply_personas`) so reply context is visible and deterministic.
 - Frontend includes a dedicated Personas page using the same table + modal-create + sheet-edit interaction model as Jobs, persisted via `/personas`.
-- Frontend includes a dedicated Settings page for Reddit/OpenRouter fields, persisted via `/settings`.
+- Frontend includes a dedicated Auths page (table + modal create + sheet details) for Reddit/LinkedIn auth objects, persisted via `/auths`.
+- Frontend includes a dedicated Settings page for LLM/OpenRouter fields only, persisted via `/settings`.
 - Frontend does not expose a dedicated Replies page; reply drafting/sending is handled within Threads workflows.
-- Jobs and Threads headers include a shared auto-refresh dropdown (`off`, `5s`, `30s`, `1m`) that controls polling intervals per page.
+- Jobs and Threads headers use a split refresh control: left action triggers manual refresh, right side opens auto-refresh dropdown (`off`, `30s`, `1m`, `5m`, `15m`) with default `30s`.
 - Template sections not used by Reddrop are removed from active `src/` routes/features and parked under `frontend/_unused/`.

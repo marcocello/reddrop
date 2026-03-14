@@ -48,10 +48,28 @@ class PersonaProfile(BaseModel):
     objective: str
 
 
+class AuthProfile(BaseModel):
+    id: str = Field(validation_alias=AliasChoices("id", "auth_id"))
+    name: str
+    social: Literal["reddit", "linkedin"] = "reddit"
+    reddit_client_id: str = ""
+    reddit_client_secret: str = ""
+    reddit_user_agent: str = "Reddrop:v1.0"
+    reddit_username: str = ""
+    reddit_password: str = ""
+    linkedin_email: str = ""
+    linkedin_password: str = ""
+    linkedin_headless: str = "true"
+    linkedin_user_data_dir: str = "~/.linkedin-playwright"
+    linkedin_wait_seconds: str = "120"
+
+
 class PeriodicSearchJob(BaseModel):
     id: str = Field(validation_alias=AliasChoices("id", "job_id"))
     name: str
     job_type: Literal["search", "reply"] = "search"
+    social: Literal["reddit", "linkedin"] = "reddit"
+    auth_id: str | None = None
     source_job_id: str | None = None
     topic: str
     min_similarity_score: float = 0.35
@@ -66,3 +84,7 @@ class PeriodicSearchJob(BaseModel):
 
 class JobsConfig(BaseModel):
     jobs: list[PeriodicSearchJob] = Field(default_factory=list)
+
+
+class AuthsConfig(BaseModel):
+    auths: list[AuthProfile] = Field(default_factory=list)

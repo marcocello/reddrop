@@ -2,13 +2,20 @@
   <img src="logo.svg" alt="Reddrop" width="180"/>
 </div>
 
-Find high-signal Reddit threads for your topic, generate persona-aware replies, and ship faster.
+Reddrop helps teams grow by joining the right Reddit and LinkedIn conversations.
+
+Most teams underestimate comments.
+People get interested when someone explains why a product matters in plain language, inside a real discussion.
+That is why comments often outperform polished posts: they feel human, specific, and timely.
+
+Reddrop finds high-signal conversations across Reddit and LinkedIn, drafts context-aware replies, and helps you engage consistently.
 
 Reddrop helps you:
-- discover relevant threads for a topic
-- draft replies that match your persona + thread context
-- send replies and track what was posted
-- run jobs repeatedly with runtime settings
+- find relevant Reddit threads and LinkedIn posts for your topic
+- identify interesting conversations worth joining
+- draft replies that match your persona and thread context
+- post and track what was sent
+- run repeatable jobs with runtime settings
 
 **How To Run**
 

@@ -20,12 +20,23 @@ class SearchDependencies:
     conversation_model: Any
     search_artifact_model: Any
     now_fn: Any
+    linkedin_service_cls: Any | None = None
     should_stop: Callable[[], bool] = _never_stop
+    prepare_job: Callable[[PeriodicSearchJob], None] | None = None
+
+
+def _resolve_social(raw: object) -> str:
+    value = str(raw or "").strip().lower()
+    if value == "linkedin":
+        return "linkedin"
+    return "reddit"
 
 
 def _search_job(job: PeriodicSearchJob, storage, deps: SearchDependencies):
     if deps.should_stop():
         raise RuntimeError("Run stopped by user request.")
+    if deps.prepare_job is not None:
+        deps.prepare_job(job)
 
     normalized_topic = job.topic.strip()
     if not normalized_topic:
@@ -45,15 +56,24 @@ def _search_job(job: PeriodicSearchJob, storage, deps: SearchDependencies):
     storage.save_search(artifact)
 
     deps.logger.info("starting: %s - %s", job.name, job.id)
+    social = _resolve_social(getattr(job, "social", "reddit"))
+    if social == "linkedin":
+        if deps.linkedin_service_cls is None:
+            raise RuntimeError("LinkedIn service is not configured.")
+        discovery_service = deps.linkedin_service_cls()
+    else:
+        discovery_service = deps.reddit_service_cls()
+
     deps.logger.info(
-        "%s - searching Reddit conversations for topic %r (time_filter=%s, subreddit_limit=%s, threads_limit=%s).",
+        "%s - searching %s conversations for topic %r (time_filter=%s, subreddit_limit=%s, threads_limit=%s).",
         job.id,
+        social,
         normalized_topic,
         job.time_filter,
         job.subreddit_limit,
         job.threads_limit,
     )
-    threads = deps.reddit_service_cls().discover_relevant_threads(
+    threads = discovery_service.discover_relevant_threads(
         content=normalized_topic,
         time_filter=job.time_filter,
         subreddit_limit=job.subreddit_limit,

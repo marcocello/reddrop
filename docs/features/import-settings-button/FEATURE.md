@@ -2,7 +2,7 @@
 
 ## Scenario: import a valid settings file
 Given the user is on the Settings page  
-When the user clicks "Import settings" and selects a valid JSON file with `reddit` and `openrouter` sections  
+When the user clicks "Import settings" and selects a valid JSON file with an `openrouter` section  
 Then the settings form fields are populated from the file  
 And the UI shows a success message telling the user to save
 

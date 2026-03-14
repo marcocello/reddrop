@@ -22,6 +22,8 @@ def handle(
         job_id=target_job_id,
         name=args.name,
         job_type=getattr(args, "job_type", "search"),
+        social=getattr(args, "social", "reddit"),
+        auth_id=getattr(args, "auth_id", None),
         source_job_id=getattr(args, "source_job_id", None),
         topic=args.topic,
         min_similarity_score=getattr(args, "min_similarity_score", 0.35),

@@ -15,7 +15,7 @@ import {
   useReactTable,
   type VisibilityState,
 } from '@tanstack/react-table'
-import { Copy, Eye, MoreHorizontal, Play, Power, PowerOff, RefreshCw, Square, Trash2 } from 'lucide-react'
+import { ChevronDown, Copy, Eye, MoreHorizontal, Play, Power, PowerOff, RefreshCw, Square, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { DataTableColumnHeader, DataTablePagination, DataTableToolbar } from '@/components/data-table'
 import { Header } from '@/components/layout/header'
@@ -38,13 +38,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   Sheet,
   SheetContent,
@@ -65,19 +59,36 @@ import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import {
   reddropApi,
+  type AuthProfile,
   type Job,
   type JobType,
   type PersonaProfile,
+  type SocialPlatform,
   type UpsertJobPayload,
 } from '@/lib/reddrop-api'
 
 const ACTIONS_COLUMN_ID = 'actions'
-const AUTO_REFRESH_INTERVAL_MS = 2000
+const AUTO_REFRESH_OPTIONS = [
+  { value: 0, label: 'Off', menuLabel: 'Auto-refresh off' },
+  { value: 30, label: 'Every 30s', menuLabel: 'Every 30s' },
+  { value: 60, label: 'Every 1m', menuLabel: 'Every 1m' },
+  { value: 300, label: 'Every 5m', menuLabel: 'Every 5m' },
+  { value: 900, label: 'Every 15m', menuLabel: 'Every 15m' },
+] as const
+const RUN_FREQUENCY_OPTIONS = [
+  { value: 60, label: 'Every 1 hour' },
+  { value: 360, label: 'Every 6 hours' },
+  { value: 720, label: 'Every 12 hours' },
+  { value: 1440, label: 'Every 24 hours' },
+] as const
+const DEFAULT_RUN_FREQUENCY_MINUTES = 1440
 
 function buildInitialForm(): UpsertJobPayload {
   return {
     name: '',
     job_type: 'search',
+    social: 'reddit',
+    auth_id: null,
     source_job_id: null,
     topic: '',
     min_similarity_score: 0.35,
@@ -86,7 +97,7 @@ function buildInitialForm(): UpsertJobPayload {
     subreddit_limit: 5,
     threads_limit: 10,
     replies_per_iteration: 3,
-    max_runtime_minutes: 1440,
+    max_runtime_minutes: DEFAULT_RUN_FREQUENCY_MINUTES,
     personas: [],
   }
 }
@@ -129,6 +140,10 @@ function activeBadgeClass(active: boolean): string {
 
 function formatJobType(value: JobType): string {
   return value === 'reply' ? 'Reply' : 'Search'
+}
+
+function formatSocial(value: SocialPlatform): string {
+  return value === 'linkedin' ? 'linkedin' : 'reddit'
 }
 
 function jobTypeBadgeClass(_value: JobType): string {
@@ -191,9 +206,25 @@ function buildReplyJobName(prefix: string, sourceSearchJobName?: string): string
   return `${normalizedPrefix}_${suffix}`
 }
 
+function normalizeRunFrequencyMinutes(value: number): number {
+  const options = new Set<number>(RUN_FREQUENCY_OPTIONS.map((item) => item.value))
+  return options.has(value) ? value : DEFAULT_RUN_FREQUENCY_MINUTES
+}
+
+function formatRunFrequency(minutes: number): string {
+  const match = RUN_FREQUENCY_OPTIONS.find((item) => item.value === minutes)
+  if (match) return match.label
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60
+    return `Every ${hours} hour${hours === 1 ? '' : 's'}`
+  }
+  return `Every ${minutes} minutes`
+}
+
 export function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(false)
+  const [autoRefreshSeconds, setAutoRefreshSeconds] = useState<number>(30)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [sorting, setSorting] = useState<SortingState>([{ id: 'name', desc: false }])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
@@ -203,6 +234,7 @@ export function JobsPage() {
   const [draggingColumnId, setDraggingColumnId] = useState<string | null>(null)
 
   const [personaOptions, setPersonaOptions] = useState<PersonaProfile[]>([])
+  const [authOptions, setAuthOptions] = useState<AuthProfile[]>([])
 
   const [sheetOpen, setSheetOpen] = useState(false)
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
@@ -238,17 +270,36 @@ export function JobsPage() {
     }
   }, [])
 
+  const loadAuths = useCallback(async (): Promise<void> => {
+    try {
+      const payload = await reddropApi.listAuths()
+      setAuthOptions(payload.auths)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load auths'
+      toast.error(message)
+    }
+  }, [])
+
   useEffect(() => {
     void load()
     void loadPersonas()
-  }, [load, loadPersonas])
+    void loadAuths()
+  }, [load, loadAuths, loadPersonas])
 
   useEffect(() => {
+    if (autoRefreshSeconds <= 0) {
+      return
+    }
     const timer = window.setInterval(() => {
       void load()
-    }, AUTO_REFRESH_INTERVAL_MS)
+    }, autoRefreshSeconds * 1000)
     return () => window.clearInterval(timer)
-  }, [load])
+  }, [autoRefreshSeconds, load])
+
+  const autoRefreshLabel = useMemo(() => {
+    const selected = AUTO_REFRESH_OPTIONS.find((option) => option.value === autoRefreshSeconds)
+    return selected?.label ?? 'Off'
+  }, [autoRefreshSeconds])
 
   const statusFilterOptions = useMemo(() => {
     const statuses = new Set<string>()
@@ -286,6 +337,24 @@ export function JobsPage() {
     return map
   }, [searchingJobOptions])
 
+  const sourceSearchSocialById = useMemo(() => {
+    const map = new Map<string, SocialPlatform>()
+    searchingJobOptions.forEach((job) => map.set(job.id, job.social))
+    return map
+  }, [searchingJobOptions])
+
+  const sourceSearchAuthById = useMemo(() => {
+    const map = new Map<string, string | null>()
+    searchingJobOptions.forEach((job) => map.set(job.id, job.auth_id ?? null))
+    return map
+  }, [searchingJobOptions])
+
+  const authNameById = useMemo(() => {
+    const map = new Map<string, string>()
+    authOptions.forEach((auth) => map.set(auth.id, auth.name))
+    return map
+  }, [authOptions])
+
   const openCreateDialog = useCallback((): void => {
     setSelectedJob(null)
     setForm(buildInitialForm())
@@ -303,6 +372,10 @@ export function JobsPage() {
       toast.error('Topic is required for search jobs')
       return
     }
+    if (form.job_type === 'search' && !form.auth_id) {
+      toast.error('Auth profile is required for search jobs')
+      return
+    }
     if (form.job_type === 'reply' && !form.source_job_id) {
       toast.error('Source search job is required for reply jobs')
       return
@@ -314,6 +387,10 @@ export function JobsPage() {
 
     const sourceName =
       form.source_job_id ? sourceSearchNameById.get(form.source_job_id) : undefined
+    const sourceSocial =
+      form.source_job_id ? sourceSearchSocialById.get(form.source_job_id) : undefined
+    const sourceAuthId =
+      form.source_job_id ? sourceSearchAuthById.get(form.source_job_id) : undefined
     let normalizedName = form.name.trim()
     if (form.job_type === 'reply') {
       normalizedName = buildReplyJobName(normalizedName, sourceName)
@@ -326,6 +403,8 @@ export function JobsPage() {
     const payload: UpsertJobPayload = {
       ...form,
       name: normalizedName,
+      social: form.job_type === 'reply' ? (sourceSocial ?? form.social) : form.social,
+      auth_id: form.job_type === 'reply' ? (sourceAuthId ?? form.auth_id ?? null) : form.auth_id,
       topic: form.job_type === 'search' ? form.topic : '',
       source_job_id: form.job_type === 'reply' ? form.source_job_id : null,
     }
@@ -344,7 +423,7 @@ export function JobsPage() {
     } finally {
       setSaving(false)
     }
-  }, [form, load, sourceSearchNameById])
+  }, [form, load, sourceSearchAuthById, sourceSearchNameById, sourceSearchSocialById])
 
   const runAction = useCallback(async (job: Job, action: 'start' | 'stop'): Promise<void> => {
     const key = `${job.id}:${action}`
@@ -409,6 +488,8 @@ export function JobsPage() {
     setForm({
       name: duplicateName,
       job_type: job.job_type,
+      social: job.social,
+      auth_id: job.auth_id ?? null,
       source_job_id: job.source_job_id ?? null,
       topic: job.job_type === 'reply' ? '' : job.topic,
       min_similarity_score: job.min_similarity_score,
@@ -417,7 +498,7 @@ export function JobsPage() {
       subreddit_limit: job.subreddit_limit,
       threads_limit: job.threads_limit,
       replies_per_iteration: job.replies_per_iteration,
-      max_runtime_minutes: job.max_runtime_minutes,
+      max_runtime_minutes: normalizeRunFrequencyMinutes(job.max_runtime_minutes),
       personas: job.job_type === 'reply' && job.personas.length > 0 ? [job.personas[0]] : [...job.personas],
     })
     setCreateDialogOpen(true)
@@ -462,6 +543,17 @@ export function JobsPage() {
         ),
       },
       {
+        id: 'social',
+        accessorFn: (row) => row.social,
+        filterFn: arrayFilterFn,
+        header: ({ column }) => <DataTableColumnHeader column={column} title='Social' />,
+        cell: ({ row }) => (
+          <Badge className='bg-muted text-muted-foreground'>
+            {formatSocial(row.original.social)}
+          </Badge>
+        ),
+      },
+      {
         id: 'source',
         accessorFn: (row) => {
           if (row.job_type !== 'reply') return '-'
@@ -481,6 +573,17 @@ export function JobsPage() {
               <span className='block font-mono text-xs text-muted-foreground'>{shortId(sourceId)}</span>
             </div>
           )
+        },
+      },
+      {
+        id: 'auth',
+        accessorFn: (row) => row.auth_id ?? '-',
+        header: ({ column }) => <DataTableColumnHeader column={column} title='Auth' />,
+        cell: ({ row }) => {
+          const authId = row.original.auth_id
+          if (!authId) return <span className='text-muted-foreground'>-</span>
+          const authName = authNameById.get(authId) ?? authId
+          return <span className='block truncate text-sm font-medium'>{authName}</span>
         },
       },
       {
@@ -595,7 +698,7 @@ export function JobsPage() {
         },
       },
     ],
-    [activationAction, openDuplicateJobDialog, openJobSheet, requestDeleteJob, runAction, sourceSearchNameById]
+    [activationAction, authNameById, openDuplicateJobDialog, openJobSheet, requestDeleteJob, runAction, sourceSearchNameById]
   )
 
   const orderedColumnIds = useMemo(
@@ -656,6 +759,10 @@ export function JobsPage() {
         job.id.toLowerCase().includes(query) ||
         job.name.toLowerCase().includes(query) ||
         job.job_type.toLowerCase().includes(query) ||
+        job.social.toLowerCase().includes(query) ||
+        (job.auth_id
+          ? ((authNameById.get(job.auth_id) ?? job.auth_id).toLowerCase().includes(query))
+          : false) ||
         (job.source_job_id
           ? (sourceSearchNameById.get(job.source_job_id) ?? job.source_job_id).toLowerCase().includes(query)
           : false) ||
@@ -688,8 +795,10 @@ export function JobsPage() {
   const selectedDeleteKey = selectedJob ? `${selectedJob.id}:delete` : ''
   const selectedLogs = selectedJob?.runtime?.logs ?? []
 
-  const renderJobFormFields = (prefix: string) => (
-    <>
+  const renderJobFormFields = (prefix: string) => {
+    const availableAuthOptions = authOptions.filter((auth) => auth.social === form.social)
+    return (
+      <>
       <div className='space-y-2'>
         <Label htmlFor={`${prefix}-job-type`}>Job type</Label>
         <Select
@@ -700,12 +809,17 @@ export function JobsPage() {
               nextType === 'reply' && form.source_job_id
                 ? sourceSearchNameById.get(form.source_job_id)
                 : undefined
+            const sourceAuthId =
+              nextType === 'reply' && form.source_job_id
+                ? sourceSearchAuthById.get(form.source_job_id) ?? null
+                : null
             setForm((prev) => ({
               ...prev,
               job_type: nextType,
               source_job_id: nextType === 'reply' ? prev.source_job_id : null,
               topic: nextType === 'reply' ? '' : prev.topic,
               personas: nextType === 'reply' ? (prev.personas.length > 0 ? [prev.personas[0]] : []) : [],
+              auth_id: nextType === 'reply' ? sourceAuthId : prev.auth_id,
               name: nextType === 'reply' ? extractReplyPrefix(prev.name, sourceName) : prev.name,
             }))
           }}
@@ -720,6 +834,60 @@ export function JobsPage() {
         </Select>
       </div>
 
+      <div className='space-y-2'>
+        <Label htmlFor={`${prefix}-job-social`}>Social</Label>
+        <Select
+          value={form.social}
+          onValueChange={(value) => {
+            const nextSocial = value as SocialPlatform
+            setForm((prev) => {
+              const nextAuth = authOptions.find((auth) => auth.id === prev.auth_id)
+              const compatibleAuthId = nextAuth && nextAuth.social === nextSocial ? prev.auth_id : null
+              return { ...prev, social: nextSocial, auth_id: compatibleAuthId }
+            })
+          }}
+          disabled={form.job_type === 'reply' && Boolean(form.source_job_id)}
+        >
+          <SelectTrigger id={`${prefix}-job-social`} className='w-full'>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value='reddit'>reddit</SelectItem>
+            <SelectItem value='linkedin'>linkedin</SelectItem>
+          </SelectContent>
+        </Select>
+        {form.job_type === 'reply' && form.source_job_id ? (
+          <p className='text-xs text-muted-foreground'>
+            Reply jobs inherit social from their source Search job.
+          </p>
+        ) : null}
+      </div>
+
+      <div className='space-y-2'>
+        <Label htmlFor={`${prefix}-job-auth`}>Auth profile</Label>
+        <Select
+          value={form.auth_id ?? undefined}
+          onValueChange={(value) => setForm((prev) => ({ ...prev, auth_id: value }))}
+          disabled={form.job_type === 'reply' && Boolean(form.source_job_id)}
+        >
+          <SelectTrigger id={`${prefix}-job-auth`} className='w-full'>
+            <SelectValue placeholder='Select an auth profile' />
+          </SelectTrigger>
+          <SelectContent>
+            {availableAuthOptions.map((auth) => (
+              <SelectItem key={auth.id} value={auth.id}>
+                {auth.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {form.job_type === 'reply' && form.source_job_id ? (
+          <p className='text-xs text-muted-foreground'>
+            Reply jobs inherit auth from their source Search job.
+          </p>
+        ) : null}
+      </div>
+
       {form.job_type === 'reply' ? (
         <div className='space-y-2'>
           <Label htmlFor={`${prefix}-source-job-id`}>Source search job</Label>
@@ -729,6 +897,8 @@ export function JobsPage() {
               setForm((prev) => ({
                 ...prev,
                 source_job_id: value,
+                social: sourceSearchSocialById.get(value) ?? prev.social,
+                auth_id: sourceSearchAuthById.get(value) ?? prev.auth_id ?? null,
                 name: extractReplyPrefix(prev.name, sourceSearchNameById.get(value)),
               }))
             }
@@ -911,40 +1081,51 @@ export function JobsPage() {
       )}
 
       <div className='grid gap-3 sm:grid-cols-2'>
-        <div className='space-y-2'>
-          <Label htmlFor={`${prefix}-replies-per-iteration`}>Replies per iteration</Label>
-          <Input
-            id={`${prefix}-replies-per-iteration`}
-            type='number'
-            min={1}
-            value={form.replies_per_iteration}
-            onChange={(event) =>
-              setForm((prev) => ({
-                ...prev,
-                replies_per_iteration: Number(event.target.value || 1),
-              }))
-            }
-          />
-        </div>
+        {form.job_type === 'reply' ? (
+          <div className='space-y-2'>
+            <Label htmlFor={`${prefix}-replies-per-iteration`}>Replies per iteration</Label>
+            <Input
+              id={`${prefix}-replies-per-iteration`}
+              type='number'
+              min={1}
+              value={form.replies_per_iteration}
+              onChange={(event) =>
+                setForm((prev) => ({
+                  ...prev,
+                  replies_per_iteration: Number(event.target.value || 1),
+                }))
+              }
+            />
+          </div>
+        ) : null}
 
         <div className='space-y-2'>
-          <Label htmlFor={`${prefix}-max-runtime-minutes`}>Run interval minutes</Label>
-          <Input
-            id={`${prefix}-max-runtime-minutes`}
-            type='number'
-            min={1}
-            value={form.max_runtime_minutes}
-            onChange={(event) =>
+          <Label htmlFor={`${prefix}-max-runtime-minutes`}>Run frequency</Label>
+          <Select
+            value={String(normalizeRunFrequencyMinutes(form.max_runtime_minutes))}
+            onValueChange={(value) =>
               setForm((prev) => ({
                 ...prev,
-                max_runtime_minutes: Number(event.target.value || 1),
+                max_runtime_minutes: Number.parseInt(value, 10),
               }))
             }
-          />
+          >
+            <SelectTrigger id={`${prefix}-max-runtime-minutes`} className='w-full'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='60'>Every 1 hour</SelectItem>
+              <SelectItem value='360'>Every 6 hours</SelectItem>
+              <SelectItem value='720'>Every 12 hours</SelectItem>
+              <SelectItem value='1440'>Every 24 hours</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className='text-xs text-muted-foreground'>How often this job runs.</p>
         </div>
       </div>
     </>
-  )
+    )
+  }
 
   return (
     <>
@@ -953,17 +1134,37 @@ export function JobsPage() {
           <Button size='sm' onClick={openCreateDialog}>
             Create job
           </Button>
-          <Button
-            variant='outline'
-            size='sm'
-            onClick={() => void load()}
-            disabled={loading}
-            aria-label='Refresh jobs'
-            title='Refresh jobs'
-          >
-            <RefreshCw className='size-4 animate-spin [animation-duration:2s]' />
-            Refresh
-          </Button>
+          <div className='inline-flex h-8 items-center overflow-hidden rounded-md border'>
+            <Button
+              variant='ghost'
+              size='icon'
+              className='h-full w-8 rounded-none border-r'
+              onClick={() => void load()}
+              disabled={loading}
+              aria-label='Manual refresh jobs'
+              title='Manual refresh jobs'
+            >
+              <RefreshCw className={cn('size-4', autoRefreshSeconds > 0 && 'animate-spin [animation-duration:2s]')} />
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant='ghost' size='sm' aria-label='Auto-refresh jobs' className='h-full rounded-none gap-2 px-3'>
+                  <ChevronDown className='size-4' />
+                  <span>{autoRefreshLabel}</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align='end'>
+                {AUTO_REFRESH_OPTIONS.map((option) => (
+                  <DropdownMenuItem key={option.value} onSelect={() => setAutoRefreshSeconds(option.value)}>
+                    <span className='mr-3 inline-flex w-4 justify-center text-foreground'>
+                      {autoRefreshSeconds === option.value ? '●' : ''}
+                    </span>
+                    {option.menuLabel}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </Header>
 
@@ -1178,6 +1379,11 @@ export function JobsPage() {
                   <p><span className='font-medium'>ID:</span> <span className='font-mono'>{selectedJob.id}</span></p>
                   <p><span className='font-medium'>Name:</span> {selectedJob.name}</p>
                   <p><span className='font-medium'>Type:</span> {formatJobType(selectedJob.job_type)}</p>
+                  <p><span className='font-medium'>Social:</span> {formatSocial(selectedJob.social)}</p>
+                  <p>
+                    <span className='font-medium'>Auth:</span>{' '}
+                    {selectedJob.auth_id ? (authNameById.get(selectedJob.auth_id) ?? selectedJob.auth_id) : '-'}
+                  </p>
                   <p>
                     <span className='font-medium'>Source search job:</span>{' '}
                     {selectedJob.source_job_id ? (sourceSearchNameById.get(selectedJob.source_job_id) ?? selectedJob.source_job_id) : '-'}
@@ -1192,9 +1398,11 @@ export function JobsPage() {
                   <p><span className='font-medium'>Time filter:</span> {selectedJob.time_filter}</p>
                   <p><span className='font-medium'>Subreddit limit:</span> {selectedJob.subreddit_limit}</p>
                   <p><span className='font-medium'>Threads limit:</span> {selectedJob.threads_limit}</p>
-                  <p><span className='font-medium'>Replies per iteration:</span> {selectedJob.replies_per_iteration}</p>
+                  {selectedJob.job_type === 'reply' ? (
+                    <p><span className='font-medium'>Replies per iteration:</span> {selectedJob.replies_per_iteration}</p>
+                  ) : null}
                   <p><span className='font-medium'>Minimum similarity score:</span> {selectedJob.job_type === 'reply' ? selectedJob.min_similarity_score : '-'}</p>
-                  <p><span className='font-medium'>Run interval minutes:</span> {selectedJob.max_runtime_minutes}</p>
+                  <p><span className='font-medium'>Run frequency:</span> {formatRunFrequency(selectedJob.max_runtime_minutes)}</p>
                   <p><span className='font-medium'>Personas:</span> {selectedJob.personas.length > 0 ? selectedJob.personas.join(', ') : '-'}</p>
                 </div>
               ) : null}

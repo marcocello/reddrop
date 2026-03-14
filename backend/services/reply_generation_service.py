@@ -5,7 +5,7 @@ from typing import Optional
 
 from ..config.log import setup_logging
 from ..models import Conversation, PersonaProfile
-from .llm_service import llm_service
+from .llm_service import LLMServiceError, llm_service
 
 logger = setup_logging(__name__)
 
@@ -43,6 +43,8 @@ Thread body:
             if not tone or not style or not guidance:
                 return self._default_tone_profile()
             return {"tone": tone, "style": style, "guidance": guidance}
+        except LLMServiceError:
+            raise
         except Exception:
             logger.info("Tone/style extraction failed. Using default tone profile.")
             return self._default_tone_profile()
@@ -105,8 +107,4 @@ Keep it practical, specific, and conversational in 2-4 sentences.
         if response:
             return response
 
-        logger.info("LLM reply generation returned empty output. Using deterministic fallback.")
-        return (
-            f"Interesting thread. On '{topic}', I'd focus on one concrete next step and share a short result update "
-            f"so others can react with specifics."
-        )
+        raise RuntimeError("LLM reply generation returned empty output.")

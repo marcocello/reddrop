@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
 from typing import Literal
@@ -55,6 +59,8 @@ class JobConfigStore:
         job_id: str,
         name: str,
         job_type: Literal["search", "reply"] = "search",
+        social: Literal["reddit", "linkedin"] = "reddit",
+        auth_id: str | None = None,
         source_job_id: str | None = None,
         topic: str,
         min_similarity_score: float = 0.35,
@@ -84,6 +90,8 @@ class JobConfigStore:
                 id=self._config.jobs[existing].id if existing is not None else normalized_id,
                 name=normalized_name,
                 job_type=self._normalize_job_type(job_type),
+                social=self._normalize_social(social),
+                auth_id=self._normalize_source_job_id(auth_id),
                 source_job_id=self._normalize_source_job_id(source_job_id),
                 topic=self._normalize_topic_for_job_type(job_type=job_type, topic=topic),
                 min_similarity_score=self._normalize_similarity_score(min_similarity_score, fallback=0.35),
@@ -109,6 +117,8 @@ class JobConfigStore:
         job_id: str,
         name: str,
         job_type: Literal["search", "reply"] = "search",
+        social: Literal["reddit", "linkedin"] = "reddit",
+        auth_id: str | None = None,
         source_job_id: str | None = None,
         topic: str,
         min_similarity_score: float = 0.35,
@@ -144,6 +154,8 @@ class JobConfigStore:
                 id=normalized_id,
                 name=normalized_name,
                 job_type=self._normalize_job_type(job_type),
+                social=self._normalize_social(social),
+                auth_id=self._normalize_source_job_id(auth_id),
                 source_job_id=self._normalize_source_job_id(source_job_id),
                 topic=self._normalize_topic_for_job_type(job_type=job_type, topic=topic),
                 min_similarity_score=self._normalize_similarity_score(min_similarity_score, fallback=0.35),
@@ -183,6 +195,8 @@ class JobConfigStore:
                     id=job.id,
                     name=job.name,
                     job_type=job.job_type,
+                    social=job.social,
+                    auth_id=job.auth_id,
                     source_job_id=job.source_job_id,
                     topic=job.topic,
                     min_similarity_score=job.min_similarity_score,
@@ -203,7 +217,8 @@ class JobConfigStore:
         if not self.config_path.exists():
             return JobsConfig()
         try:
-            payload = json.loads(self.config_path.read_text(encoding="utf-8"))
+            with self._exclusive_lock():
+                payload = json.loads(self.config_path.read_text(encoding="utf-8"))
             payload = self._normalize_payload(payload)
             return JobsConfig.model_validate(payload)
         except Exception:
@@ -237,6 +252,8 @@ class JobConfigStore:
             if not record.get("time_filter"):
                 record["time_filter"] = "week"
             record["job_type"] = JobConfigStore._normalize_job_type(record.get("job_type"))
+            record["social"] = JobConfigStore._normalize_social(record.get("social"))
+            record["auth_id"] = JobConfigStore._normalize_source_job_id(record.get("auth_id"))
             record["source_job_id"] = JobConfigStore._normalize_source_job_id(record.get("source_job_id"))
             record["topic"] = JobConfigStore._normalize_topic_for_job_type(
                 job_type=record.get("job_type"),
@@ -270,10 +287,37 @@ class JobConfigStore:
         return {"jobs": normalized_jobs}
 
     def _persist(self) -> None:
-        self.config_path.write_text(
-            json.dumps(self._config.model_dump(mode="json"), indent=2),
+        payload = self._config.model_dump(mode="json")
+        with self._exclusive_lock():
+            self._write_atomic(payload)
+
+    def _lock_path(self) -> Path:
+        return self.config_path.with_suffix(f"{self.config_path.suffix}.lock")
+
+    @contextmanager
+    def _exclusive_lock(self):
+        lock_path = self._lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _write_atomic(self, payload: dict) -> None:
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w",
             encoding="utf-8",
-        )
+            dir=str(self.config_path.parent),
+            delete=False,
+        ) as handle:
+            json.dump(payload, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = Path(handle.name)
+        os.replace(temp_path, self.config_path)
 
     @staticmethod
     def _positive_int(value: object, *, fallback: int) -> int:
@@ -310,6 +354,13 @@ class JobConfigStore:
         if value in {"reply", "replying"}:
             return "reply"
         return "search"
+
+    @staticmethod
+    def _normalize_social(raw: object) -> Literal["reddit", "linkedin"]:
+        value = str(raw or "").strip().lower()
+        if value in {"linkedin", "li"}:
+            return "linkedin"
+        return "reddit"
 
     @staticmethod
     def _normalize_source_job_id(raw: object) -> str | None:

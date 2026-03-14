@@ -28,11 +28,27 @@ def _setup_isolated_runtime(tmp_path, monkeypatch):
 def test_jobs_are_immutable_after_creation(tmp_path, monkeypatch) -> None:
     _setup_isolated_runtime(tmp_path, monkeypatch)
     with TestClient(api_main.app) as client:
+        auths = client.put(
+            '/auths',
+            json={
+                'auths': [
+                    {
+                        'id': 'reddit-main',
+                        'name': 'Reddit Main',
+                        'social': 'reddit',
+                        'reddit_client_id': 'id',
+                        'reddit_client_secret': 'secret',
+                    }
+                ]
+            },
+        )
+        assert auths.status_code == 200
         created = client.post(
             '/jobs',
             json={
                 'name': 'growth',
                 'topic': 'AI launch strategy',
+                'auth_id': 'reddit-main',
             },
         )
         assert created.status_code == 200
@@ -59,7 +75,22 @@ def test_jobs_are_immutable_after_creation(tmp_path, monkeypatch) -> None:
 def test_jobs_list_includes_summary_counters(tmp_path, monkeypatch) -> None:
     _setup_isolated_runtime(tmp_path, monkeypatch)
     with TestClient(api_main.app) as client:
-        created = client.post('/jobs', json={'name': 'growth', 'topic': 'AI launch strategy'})
+        auths = client.put(
+            '/auths',
+            json={
+                'auths': [
+                    {
+                        'id': 'reddit-main',
+                        'name': 'Reddit Main',
+                        'social': 'reddit',
+                        'reddit_client_id': 'id',
+                        'reddit_client_secret': 'secret',
+                    }
+                ]
+            },
+        )
+        assert auths.status_code == 200
+        created = client.post('/jobs', json={'name': 'growth', 'topic': 'AI launch strategy', 'auth_id': 'reddit-main'})
         assert created.status_code == 200
         job = created.json()
 
@@ -112,6 +143,22 @@ def test_jobs_list_includes_summary_counters(tmp_path, monkeypatch) -> None:
 def test_replying_jobs_require_source_search_job_and_persona(tmp_path, monkeypatch) -> None:
     _setup_isolated_runtime(tmp_path, monkeypatch)
     with TestClient(api_main.app) as client:
+        auths = client.put(
+            '/auths',
+            json={
+                'auths': [
+                    {
+                        'id': 'reddit-main',
+                        'name': 'Reddit Main',
+                        'social': 'reddit',
+                        'reddit_client_id': 'id',
+                        'reddit_client_secret': 'secret',
+                    }
+                ]
+            },
+        )
+        assert auths.status_code == 200
+
         missing_source = client.post(
             '/jobs',
             json={
@@ -141,6 +188,7 @@ def test_replying_jobs_require_source_search_job_and_persona(tmp_path, monkeypat
                 'name': 'search-only',
                 'job_type': 'search',
                 'topic': 'AI launch strategy',
+                'auth_id': 'reddit-main',
             },
         )
         assert search_job.status_code == 200
@@ -159,6 +207,7 @@ def test_replying_jobs_require_source_search_job_and_persona(tmp_path, monkeypat
         payload = replying_job.json()
         assert payload['job_type'] == 'reply'
         assert payload['source_job_id'] == search_job_id
+        assert payload['auth_id'] == 'reddit-main'
         assert payload['topic'] == ''
 
         custom_threshold = client.post(
