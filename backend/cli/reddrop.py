@@ -21,7 +21,8 @@ from .commands import reply as reply_command
 from .commands import search as search_command
 from .commands import send as send_command
 
-DEFAULT_HOME = Path(".reddrop")
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_HOME = _REPO_ROOT / ".reddrop"
 DEFAULT_JOBS_CONFIG = DEFAULT_HOME / "jobs_config.json"
 DEFAULT_RUNS_DIR = DEFAULT_HOME / "runs"
 DEFAULT_TIME_FILTER = "week"
@@ -52,7 +53,14 @@ def _search_storage() -> SearchStorage:
 
 
 def _auth_store() -> AuthStore:
-    return AuthStore([DEFAULT_HOME / "auths.json"])
+    return AuthStore(DEFAULT_HOME / "auth", legacy_candidates=[DEFAULT_HOME / "auths.json"])
+
+
+def _persona_store() -> PersonaStore:
+    try:
+        return PersonaStore([DEFAULT_HOME / "personas.json"])
+    except TypeError:
+        return PersonaStore()
 
 
 def _resolve_social(raw: object) -> str:
@@ -60,6 +68,25 @@ def _resolve_social(raw: object) -> str:
     if value == "linkedin":
         return "linkedin"
     return "reddit"
+
+
+def _resolve_linkedin_user_data_dir(raw_dir: str) -> str:
+    raw = (raw_dir or "").strip() or ".reddrop/auth/linkedin"
+    candidate = Path(raw).expanduser()
+    resolved = candidate if candidate.is_absolute() else (_REPO_ROOT / candidate)
+    try:
+        resolved = resolved.resolve()
+    except Exception:
+        pass
+
+    home_reddrop = (Path.home() / ".reddrop").resolve()
+    if resolved == home_reddrop or home_reddrop in resolved.parents:
+        try:
+            relative_tail = resolved.relative_to(home_reddrop)
+        except Exception:
+            relative_tail = Path("auth/linkedin")
+        resolved = (_REPO_ROOT / ".reddrop" / relative_tail).resolve()
+    return str(resolved)
 
 
 def _apply_auth_to_env(job: PeriodicSearchJob) -> None:
@@ -80,7 +107,7 @@ def _apply_auth_to_env(job: PeriodicSearchJob) -> None:
         os.environ["LINKEDIN_EMAIL"] = auth.linkedin_email.strip()
         os.environ["LINKEDIN_PASSWORD"] = auth.linkedin_password.strip()
         os.environ["LINKEDIN_HEADLESS"] = auth.linkedin_headless.strip() or "true"
-        os.environ["LINKEDIN_USER_DATA_DIR"] = auth.linkedin_user_data_dir.strip()
+        os.environ["LINKEDIN_USER_DATA_DIR"] = _resolve_linkedin_user_data_dir(auth.linkedin_user_data_dir.strip())
         os.environ["LINKEDIN_WAIT_SECONDS"] = auth.linkedin_wait_seconds.strip() or "120"
         return
 
@@ -275,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         deps = reply_command.ReplyDependencies(
             logger=logger,
             runs_dir=DEFAULT_RUNS_DIR,
-            persona_store_cls=PersonaStore,
+            persona_store_cls=_persona_store,
             reply_generation_service_cls=ReplyGenerationService,
             search_storage_cls=SearchStorage,
             search_artifact_model=SearchArtifact,

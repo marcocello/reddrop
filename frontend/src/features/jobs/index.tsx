@@ -1173,23 +1173,23 @@ export function JobsPage() {
           <h2 className='text-2xl font-bold tracking-tight'>Jobs</h2>
         </div>
 
-        <div className='space-y-4'>
-          <DataTableToolbar
-            table={table}
-            searchPlaceholder='Search by id, name, topic or status...'
-            filters={[
-              ...(jobTypeFilterOptions.length > 0
-                ? [{ columnId: 'job_type', title: 'Type', options: jobTypeFilterOptions }]
-                : []),
-              ...(activeFilterOptions.length > 0
-                ? [{ columnId: 'active', title: 'Active', options: activeFilterOptions }]
-                : []),
-              ...(statusFilterOptions.length > 0
-                ? [{ columnId: 'status', title: 'Status', options: statusFilterOptions }]
-                : []),
-            ]}
-          />
+        <DataTableToolbar
+          table={table}
+          searchPlaceholder='Search by id, name, topic or status...'
+          filters={[
+            ...(jobTypeFilterOptions.length > 0
+              ? [{ columnId: 'job_type', title: 'Type', options: jobTypeFilterOptions }]
+              : []),
+            ...(activeFilterOptions.length > 0
+              ? [{ columnId: 'active', title: 'Active', options: activeFilterOptions }]
+              : []),
+            ...(statusFilterOptions.length > 0
+              ? [{ columnId: 'status', title: 'Status', options: statusFilterOptions }]
+              : []),
+          ]}
+        />
 
+        <div className='space-y-4'>
           <div className='rounded-md border'>
             <Table>
               <TableHeader>

@@ -47,7 +47,7 @@ from backend.services.reddit_service import RedditService
 from backend.services.search_storage import SearchStorage
 from backend.services.settings_store import SettingsStore
 
-DEFAULT_HOME = Path(".reddrop")
+DEFAULT_HOME = _REPO_ROOT / ".reddrop"
 DEFAULT_JOBS_CONFIG = DEFAULT_HOME / "jobs_config.json"
 DEFAULT_RUNS_DIR = DEFAULT_HOME / "runs"
 DEFAULT_TIME_FILTER = "week"
@@ -76,7 +76,26 @@ def _slug_token(value: str) -> str:
 def _default_linkedin_user_data_dir(name: str, auth_id: str) -> str:
     name_part = _slug_token(name)[:24] or "linkedin"
     id_part = auth_id.strip()[:8] or "auth"
-    return f"~/.reddrop/linkedin/{name_part}-{id_part}"
+    return f".reddrop/auth/linkedin/{name_part}-{id_part}"
+
+
+def _resolve_linkedin_user_data_dir(raw_dir: str) -> str:
+    raw = (raw_dir or "").strip() or ".reddrop/auth/linkedin"
+    candidate = Path(raw).expanduser()
+    resolved = candidate if candidate.is_absolute() else (_REPO_ROOT / candidate)
+    try:
+        resolved = resolved.resolve()
+    except Exception:
+        pass
+
+    home_reddrop = (Path.home() / ".reddrop").resolve()
+    if resolved == home_reddrop or home_reddrop in resolved.parents:
+        try:
+            relative_tail = resolved.relative_to(home_reddrop)
+        except Exception:
+            relative_tail = Path("auth/linkedin")
+        resolved = (_REPO_ROOT / ".reddrop" / relative_tail).resolve()
+    return str(resolved)
 
 
 app = FastAPI(title="Reddrop API", version="1.0.0")
@@ -219,7 +238,15 @@ def _settings_store() -> SettingsStore:
 
 
 def _auth_store() -> AuthStore:
-    return AuthStore([DEFAULT_HOME / "auths.json"])
+    return AuthStore(DEFAULT_HOME / "auth", legacy_candidates=[DEFAULT_HOME / "auths.json"])
+
+
+def _persona_store() -> PersonaStore:
+    try:
+        return PersonaStore([DEFAULT_HOME / "personas.json"])
+    except TypeError:
+        # Test doubles may expose a zero-arg constructor only.
+        return PersonaStore()
 
 
 def _auth_by_ref(auth_ref: str) -> AuthProfile:
@@ -254,7 +281,7 @@ def _apply_auth_to_env(auth: AuthProfile) -> None:
     os.environ["LINKEDIN_EMAIL"] = auth.linkedin_email.strip()
     os.environ["LINKEDIN_PASSWORD"] = auth.linkedin_password.strip()
     os.environ["LINKEDIN_HEADLESS"] = auth.linkedin_headless.strip() or "true"
-    os.environ["LINKEDIN_USER_DATA_DIR"] = auth.linkedin_user_data_dir.strip()
+    os.environ["LINKEDIN_USER_DATA_DIR"] = _resolve_linkedin_user_data_dir(auth.linkedin_user_data_dir.strip())
     os.environ["LINKEDIN_WAIT_SECONDS"] = auth.linkedin_wait_seconds.strip() or "120"
 
 
@@ -428,7 +455,7 @@ def _run_reply_for_job(
     deps = reply_command.ReplyDependencies(
         logger=job_logger or logger,
         runs_dir=DEFAULT_RUNS_DIR,
-        persona_store_cls=PersonaStore,
+        persona_store_cls=_persona_store,
         reply_generation_service_cls=ReplyGenerationService,
         search_storage_cls=SearchStorage,
         search_artifact_model=SearchArtifact,
@@ -831,7 +858,7 @@ def health() -> dict[str, str]:
 @app.get("/personas", response_model=PersonaCatalogResponse)
 def list_personas() -> dict[str, Any]:
     try:
-        return _persona_catalog_payload(PersonaStore())
+        return _persona_catalog_payload(_persona_store())
     except FileNotFoundError:
         return {"personas": [], "source": None}
     except Exception as exc:
@@ -840,7 +867,7 @@ def list_personas() -> dict[str, Any]:
 
 @app.put("/personas", response_model=PersonaCatalogResponse)
 def upsert_personas(request: UpsertPersonasRequest) -> dict[str, Any]:
-    store = PersonaStore()
+    store = _persona_store()
     try:
         persisted_path = store.save_personas(request.personas)
     except Exception as exc:
@@ -873,8 +900,12 @@ def upsert_auths(request: UpsertAuthsRequest) -> dict[str, Any]:
         seen_ids.add(lowered)
         social = _resolve_social(auth.social)
         linkedin_user_data_dir = auth.linkedin_user_data_dir.strip()
+        linkedin_headless = auth.linkedin_headless.strip() or "true"
+        linkedin_wait_seconds = auth.linkedin_wait_seconds.strip() or "120"
         if social == "linkedin":
+            linkedin_headless = "true"
             linkedin_user_data_dir = _default_linkedin_user_data_dir(auth_name, auth_id)
+            linkedin_wait_seconds = "120"
 
         normalized_auths.append(
             AuthProfile(
@@ -888,9 +919,9 @@ def upsert_auths(request: UpsertAuthsRequest) -> dict[str, Any]:
                 reddit_password=auth.reddit_password,
                 linkedin_email=auth.linkedin_email,
                 linkedin_password=auth.linkedin_password,
-                linkedin_headless=auth.linkedin_headless,
+                linkedin_headless=linkedin_headless,
                 linkedin_user_data_dir=linkedin_user_data_dir,
-                linkedin_wait_seconds=auth.linkedin_wait_seconds,
+                linkedin_wait_seconds=linkedin_wait_seconds,
             )
         )
 
@@ -924,7 +955,8 @@ def run_linkedin_login(auth_ref: str) -> dict[str, Any]:
     if _resolve_social(auth.social) != "linkedin":
         raise HTTPException(status_code=400, detail=f"Auth is not LinkedIn: {auth_ref}")
 
-    user_data_dir = auth.linkedin_user_data_dir.strip() or str(DEFAULT_HOME / "linkedin-playwright")
+    raw_user_data_dir = auth.linkedin_user_data_dir.strip() or ".reddrop/auth/linkedin"
+    user_data_dir = _resolve_linkedin_user_data_dir(raw_user_data_dir)
     raw_wait = auth.linkedin_wait_seconds.strip() or "120"
     try:
         wait_seconds = max(30, int(raw_wait))
@@ -1197,7 +1229,7 @@ def generate_reply(request: ReplyRequest) -> dict[str, Any]:
     deps = reply_command.ReplyDependencies(
         logger=logger,
         runs_dir=DEFAULT_RUNS_DIR,
-        persona_store_cls=PersonaStore,
+        persona_store_cls=_persona_store,
         reply_generation_service_cls=ReplyGenerationService,
         search_storage_cls=SearchStorage,
         search_artifact_model=SearchArtifact,
@@ -1302,7 +1334,7 @@ def create_reply_for_thread(
         raise HTTPException(status_code=404, detail=f"Thread not found for job: {thread_id}")
 
     try:
-        persona = PersonaStore().get_persona(persona_name)
+        persona = _persona_store().get_persona(persona_name)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

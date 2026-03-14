@@ -10,6 +10,7 @@ from ..config.log import setup_logging
 from .settings_store import SettingsStore
 
 logger = setup_logging(__name__)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _never_stop() -> bool:
@@ -23,14 +24,33 @@ def _parse_headless_flag(raw: str) -> bool:
     return True
 
 
+def _resolve_profile_dir(raw_dir: str) -> Path:
+    raw = (raw_dir or "").strip() or ".reddrop/auth/linkedin"
+    candidate = Path(raw).expanduser()
+    resolved = candidate if candidate.is_absolute() else (_REPO_ROOT / candidate)
+    try:
+        resolved = resolved.resolve()
+    except Exception:
+        pass
+
+    home_reddrop = (Path.home() / ".reddrop").resolve()
+    if resolved == home_reddrop or home_reddrop in resolved.parents:
+        try:
+            relative_tail = resolved.relative_to(home_reddrop)
+        except Exception:
+            relative_tail = Path("auth/linkedin")
+        resolved = (_REPO_ROOT / ".reddrop" / relative_tail).resolve()
+    return resolved
+
+
 class LinkedinService:
     """Headless LinkedIn discovery/posting integration."""
 
     def __init__(self) -> None:
         SettingsStore().load()
         self.headless = _parse_headless_flag(os.getenv("LINKEDIN_HEADLESS", "true"))
-        configured_dir = (os.getenv("LINKEDIN_USER_DATA_DIR") or "~/.linkedin-playwright").strip()
-        self.user_data_dir = str(Path(configured_dir).expanduser())
+        configured_dir = (os.getenv("LINKEDIN_USER_DATA_DIR") or ".reddrop/auth/linkedin").strip()
+        self.user_data_dir = str(_resolve_profile_dir(configured_dir))
 
     def discover_relevant_threads(
         self,

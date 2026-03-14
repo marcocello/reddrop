@@ -21,7 +21,7 @@ Feature: Auth object management and social login bootstrap
     And the browser closes when the login window wait completes
     And the auth object is saved only when login completed successfully
     And its ID is generated automatically as a UUID
-    And its user data directory is derived from the auth name and ID
+    And its user data directory is `.reddrop/auth/linkedin/<name>-<id8>` derived from the auth name and ID
     And the API reports the login bootstrap execution result
 
   Scenario: LinkedIn auth creation is rejected when login is not completed
@@ -35,7 +35,7 @@ Feature: Auth object management and social login bootstrap
     Given I choose social "linkedin" in the Auths create form
     When the form is rendered
     Then username and password input fields are not shown
-    And the form asks only for browser-session settings such as wait seconds
+    And runtime options (headless, wait seconds, user data dir) are not shown
 
   Scenario Outline: Jobs use auth names for selection and display
     Given a "<social>" auth object exists
@@ -64,5 +64,7 @@ Feature: Auth object management and social login bootstrap
 
 ## Constraints
 - Settings page remains LLM-only; social credentials are managed in Auths.
-- LinkedIn login bootstrap must open a browser session and save profile state in the configured user data directory.
+- LinkedIn login bootstrap must open a browser session and save profile state in an API-generated user data directory.
 - Playwright dependency must be available in backend runtime for LinkedIn login bootstrap.
+- Auth profiles are persisted under `.reddrop/auth/reddit/auths.json` and `.reddrop/auth/linkedin/auths.json`.
+- LinkedIn `user_data_dir` must be project-local under `.reddrop/auth/linkedin/` and must not use `~/.reddrop`.

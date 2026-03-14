@@ -60,7 +60,7 @@ class AuthProfile(BaseModel):
     linkedin_email: str = ""
     linkedin_password: str = ""
     linkedin_headless: str = "true"
-    linkedin_user_data_dir: str = "~/.linkedin-playwright"
+    linkedin_user_data_dir: str = ".reddrop/auth/linkedin"
     linkedin_wait_seconds: str = "120"
 
 

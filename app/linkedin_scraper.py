@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def _url_requires_login(url: str) -> bool:
     value = (url or "").strip().lower()
@@ -48,6 +50,25 @@ def _has_linkedin_session_cookie(context) -> bool:
     return any(cookie.get("name") == "li_at" and str(cookie.get("value", "")).strip() for cookie in cookies)
 
 
+def _resolve_user_data_dir(raw_dir: str) -> Path:
+    raw = (raw_dir or "").strip() or ".reddrop/auth/linkedin"
+    candidate = Path(raw).expanduser()
+    resolved = candidate if candidate.is_absolute() else (_REPO_ROOT / candidate)
+    try:
+        resolved = resolved.resolve()
+    except Exception:
+        pass
+
+    home_reddrop = (Path.home() / ".reddrop").resolve()
+    if resolved == home_reddrop or home_reddrop in resolved.parents:
+        try:
+            relative_tail = resolved.relative_to(home_reddrop)
+        except Exception:
+            relative_tail = Path("auth/linkedin")
+        resolved = (_REPO_ROOT / ".reddrop" / relative_tail).resolve()
+    return resolved
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.linkedin_scraper")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -55,7 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
     login = subparsers.add_parser("login", help="Open LinkedIn login in a persistent browser profile.")
     login.add_argument(
         "--user-data-dir",
-        default=str(Path.home() / ".linkedin-playwright"),
+        default=str(_REPO_ROOT / ".reddrop/auth/linkedin"),
         help="Persistent profile directory used by Playwright.",
     )
     login.add_argument(
@@ -127,7 +148,7 @@ def login_and_save_session(
     if wait_seconds <= 0:
         raise ValueError("--wait-seconds must be greater than 0.")
 
-    profile_dir = Path(user_data_dir).expanduser().resolve()
+    profile_dir = _resolve_user_data_dir(user_data_dir)
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     effective_launcher = launcher or _default_login_launcher

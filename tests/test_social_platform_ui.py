@@ -40,6 +40,9 @@ def test_auth_page_supports_reddit_and_linkedin_auth_objects() -> None:
     assert 'Run LinkedIn login' in source
     assert 'linkedin-email' not in source
     assert 'linkedin-password' not in source
+    assert 'linkedin-headless' not in source
+    assert 'linkedin-wait-seconds' not in source
+    assert 'User data dir' not in source
 
 
 def test_auth_page_hides_manual_id_field_and_auto_login_on_linkedin_create() -> None:
@@ -49,6 +52,17 @@ def test_auth_page_hides_manual_id_field_and_auto_login_on_linkedin_create() -> 
     assert 'await reddropApi.runLinkedinAuthLogin(normalized.id)' in source
     assert 'crypto.randomUUID()' in source
     assert 'buildLinkedinProfileDir' in source
+    assert '.reddrop/auth/linkedin/' in source
+    assert '~/.reddrop/linkedin/' not in source
+
+
+def test_auth_create_form_orders_social_before_name() -> None:
+    source = Path('frontend/src/features/auths/index.tsx').read_text(encoding='utf-8')
+    social_index = source.find("Label htmlFor={`${prefix}-social`}>Social</Label>")
+    name_index = source.find("Label htmlFor={`${prefix}-name`}>Name</Label>")
+    assert social_index != -1
+    assert name_index != -1
+    assert social_index < name_index
 
 
 def test_linkedin_create_rolls_back_auth_when_login_fails() -> None:
@@ -61,3 +75,9 @@ def test_jobs_auth_column_shows_name_only_without_id_noise() -> None:
     source = Path('frontend/src/features/jobs/index.tsx').read_text(encoding='utf-8')
     assert 'title=\'Auth\'' in source
     assert "font-mono text-xs text-muted-foreground'>{authId}" not in source
+
+
+def test_auth_table_shows_id_column() -> None:
+    source = Path('frontend/src/features/auths/index.tsx').read_text(encoding='utf-8')
+    assert "accessorKey: 'id'" in source
+    assert "title='ID'" in source

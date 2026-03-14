@@ -20,10 +20,13 @@ def test_jobs_ui_and_auths_ui_expose_linkedin_controls() -> None:
     assert 'LinkedIn credentials' in auths_source
     assert 'linkedin-email' not in auths_source
     assert 'linkedin-password' not in auths_source
+    assert 'linkedin-headless' not in auths_source
+    assert 'linkedin-wait-seconds' not in auths_source
     assert 'reddit-username' in auths_source
     assert 'reddit-password' in auths_source
     assert 'reddit-client-id' not in auths_source
     assert 'reddit-client-secret' not in auths_source
+    assert "accessorKey: 'id'" in auths_source
 
 
 def test_runtime_logging_bridge_is_present() -> None:

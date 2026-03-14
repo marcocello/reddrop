@@ -97,9 +97,10 @@ def test_linkedin_login_endpoint_runs_scraper_command(tmp_path, monkeypatch) -> 
     assert 'app.linkedin_scraper' in command
     assert 'login' in command
     assert '--user-data-dir' in command
-    assert '~/.reddrop/linkedin/linkedin-main-linkedin' in command
+    assert any('.reddrop/auth/linkedin/linkedin-main-linkedin' in str(part) for part in command)
+    assert not any(str(part).startswith(str(Path.home() / '.reddrop')) for part in command)
     assert '--wait-seconds' in command
-    assert '180' in command
+    assert '120' in command
     assert captured['cwd'] == str(api_main._REPO_ROOT)
 
 
@@ -119,3 +120,26 @@ def test_linkedin_scraper_verifies_login_completion_and_closes_browser() -> None
     assert 'time.sleep(wait_seconds)' not in source
     assert 'finally:' in source
     assert 'context.close()' in source
+
+
+def test_linkedin_defaults_use_project_local_reddrop_paths() -> None:
+    scraper_source = Path('app/linkedin_scraper.py').read_text(encoding='utf-8')
+    models_source = Path('backend/models.py').read_text(encoding='utf-8')
+    service_source = Path('backend/services/linkedin_service.py').read_text(encoding='utf-8')
+    api_source = Path('backend/api/main.py').read_text(encoding='utf-8')
+    cli_source = Path('backend/cli/reddrop.py').read_text(encoding='utf-8')
+
+    assert '.reddrop/auth/linkedin' in scraper_source
+    assert '~/.linkedin-playwright' not in scraper_source
+    assert '~/.reddrop' not in scraper_source
+
+    assert 'linkedin_user_data_dir: str = ".reddrop/auth/linkedin"' in models_source
+    assert '~/.linkedin-playwright' not in models_source
+
+    assert 'LINKEDIN_USER_DATA_DIR") or ".reddrop/auth/linkedin"' in service_source
+    assert '~/.linkedin-playwright' not in service_source
+
+    assert 'DEFAULT_HOME = _REPO_ROOT / ".reddrop"' in api_source
+    assert '_resolve_linkedin_user_data_dir' in api_source
+    assert 'DEFAULT_HOME = _REPO_ROOT / ".reddrop"' in cli_source
+    assert '_resolve_linkedin_user_data_dir' in cli_source

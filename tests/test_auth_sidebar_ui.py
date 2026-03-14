@@ -27,3 +27,13 @@ def test_auth_main_vertical_spacing_matches_personas_layout_pattern() -> None:
     assert "<Main className='flex flex-1 flex-col gap-4 sm:gap-6'>" in auths_source
     assert "searchPlaceholder='Search by auth id, name, social...'" in auths_source
     assert "<div className='space-y-4'>\n          <DataTableToolbar" not in auths_source
+
+
+def test_jobs_main_vertical_spacing_matches_threads_layout_pattern() -> None:
+    jobs_source = Path('frontend/src/features/jobs/index.tsx').read_text(encoding='utf-8')
+    threads_source = Path('frontend/src/features/threads/index.tsx').read_text(encoding='utf-8')
+
+    assert "<Main className='flex flex-1 flex-col gap-4 sm:gap-6'>" in threads_source
+    assert "<Main className='flex flex-1 flex-col gap-4 sm:gap-6'>" in jobs_source
+    assert "searchPlaceholder='Search by id, name, topic or status...'" in jobs_source
+    assert "<div className='space-y-4'>\n          <DataTableToolbar" not in jobs_source

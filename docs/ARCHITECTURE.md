@@ -13,7 +13,7 @@
 - `backend/services/reddit_service.py`: Reddit discovery and posting integration.
 - `backend/services/linkedin_service.py`: LinkedIn headless discovery and posting integration.
 - `backend/services/settings_store.py`: load/save `settings.yaml` runtime LLM settings (`openrouter`) and sync values into process env.
-- `backend/services/auth_store.py`: load/save auth catalog (`.reddrop/auths.json`) for Reddit/LinkedIn credential profiles.
+- `backend/services/auth_store.py`: load/save auth catalog split by social under `.reddrop/auth/reddit/auths.json` and `.reddrop/auth/linkedin/auths.json`.
 - `app/linkedin_scraper.py`: Playwright-based LinkedIn login bootstrap command used by auth-triggered login flow.
 - `backend/config/log.py`: shared logging configuration and `setup_logging`.
 - `backend/models.py`: job/search data contracts.
@@ -32,6 +32,7 @@
 
 ## Data Contracts
 - Job config file: `.reddrop/jobs_config.json`.
+- Auth catalog files: `.reddrop/auth/reddit/auths.json` and `.reddrop/auth/linkedin/auths.json`.
 - Search artifacts: `.reddrop/runs/search_<job_id_prefix8>.json` (one file per job).
 - Job `id` values are UUIDs generated automatically.
 - Job entries store `id`, `name`, `job_type` (`search` or `reply`), `social` (`reddit` or `linkedin`), `auth_id`, optional `source_job_id`, `topic`, `time_filter`, `subreddit_limit`, `threads_limit`, `replies_per_iteration`, `max_runtime_minutes`, and `personas`; `name` is a no-space identifier (`[A-Za-z0-9_-]+`).
@@ -99,6 +100,8 @@
 - Threads rows expose explicit search↔reply linkage metadata (`reply_job_id`, `reply_job_name`, `reply_personas`) so reply context is visible and deterministic.
 - Frontend includes a dedicated Personas page using the same table + modal-create + sheet-edit interaction model as Jobs, persisted via `/personas`.
 - Frontend includes a dedicated Auths page (table + modal create + sheet details) for Reddit/LinkedIn auth objects, persisted via `/auths`.
+- Auths create form order is `social` then `name`.
+- LinkedIn auth forms expose only social + name and login trigger; runtime fields (`headless`, `wait seconds`, `user data dir`) are API-managed defaults.
 - Frontend includes a dedicated Settings page for LLM/OpenRouter fields only, persisted via `/settings`.
 - Frontend does not expose a dedicated Replies page; reply drafting/sending is handled within Threads workflows.
 - Jobs and Threads headers use a split refresh control: left action triggers manual refresh, right side opens auto-refresh dropdown (`off`, `30s`, `1m`, `5m`, `15m`) with default `30s`.

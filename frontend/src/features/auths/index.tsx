@@ -69,7 +69,7 @@ function buildDefaultAuth(): AuthProfile {
     linkedin_email: '',
     linkedin_password: '',
     linkedin_headless: 'true',
-    linkedin_user_data_dir: '~/.linkedin-playwright',
+    linkedin_user_data_dir: '',
     linkedin_wait_seconds: '120',
   }
 }
@@ -94,7 +94,7 @@ function normalizeToken(value: string): string {
 function buildLinkedinProfileDir(name: string, authId: string): string {
   const namePart = normalizeToken(name).slice(0, 24) || 'linkedin'
   const idPart = authId.slice(0, 8) || 'auth'
-  return `~/.reddrop/linkedin/${namePart}-${idPart}`
+  return `.reddrop/auth/linkedin/${namePart}-${idPart}`
 }
 
 function normalizeAuth(payload: AuthProfile): AuthProfile {
@@ -113,11 +113,11 @@ function normalizeAuth(payload: AuthProfile): AuthProfile {
     reddit_password: payload.reddit_password.trim(),
     linkedin_email: payload.linkedin_email.trim(),
     linkedin_password: payload.linkedin_password.trim(),
-    linkedin_headless: payload.linkedin_headless.trim() || 'true',
+    linkedin_headless: 'true',
     linkedin_user_data_dir: social === 'linkedin'
       ? buildLinkedinProfileDir(name, id)
-      : payload.linkedin_user_data_dir.trim() || '~/.linkedin-playwright',
-    linkedin_wait_seconds: payload.linkedin_wait_seconds.trim() || '120',
+      : payload.linkedin_user_data_dir.trim(),
+    linkedin_wait_seconds: '120',
   }
 }
 
@@ -129,7 +129,7 @@ function socialBadgeClass(value: SocialPlatform): string {
 
 function summaryText(item: AuthProfile): string {
   if (item.social === 'linkedin') {
-    return item.linkedin_user_data_dir || 'Browser session profile'
+    return 'LinkedIn browser session'
   }
   return item.reddit_username || 'No Reddit username'
 }
@@ -328,6 +328,11 @@ export function AuthsPage() {
   const columns = useMemo<ColumnDef<AuthProfile>[]>(
     () => [
       {
+        accessorKey: 'id',
+        header: ({ column }) => <DataTableColumnHeader column={column} title='ID' />,
+        cell: ({ row }) => <span className='font-mono text-xs'>{row.original.id}</span>,
+      },
+      {
         accessorKey: 'name',
         header: ({ column }) => <DataTableColumnHeader column={column} title='Name' />,
         enableHiding: false,
@@ -415,6 +420,7 @@ export function AuthsPage() {
       if (!query) return true
       const item = row.original
       return (
+        item.id.toLowerCase().includes(query) ||
         item.name.toLowerCase().includes(query) ||
         item.social.toLowerCase().includes(query) ||
         summaryText(item).toLowerCase().includes(query)
@@ -436,17 +442,6 @@ export function AuthsPage() {
   const renderAuthFormFields = (prefix: string) => (
     <div className='space-y-4'>
       <div className='space-y-2'>
-        <Label htmlFor={`${prefix}-name`}>Name</Label>
-        <Input
-          id={`${prefix}-name`}
-          value={form.name}
-          onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-          placeholder='Reddit Main'
-          required
-        />
-      </div>
-
-      <div className='space-y-2'>
         <Label htmlFor={`${prefix}-social`}>Social</Label>
         <Select
           value={form.social}
@@ -460,6 +455,17 @@ export function AuthsPage() {
             <SelectItem value='linkedin'>linkedin</SelectItem>
           </SelectContent>
         </Select>
+      </div>
+
+      <div className='space-y-2'>
+        <Label htmlFor={`${prefix}-name`}>Name</Label>
+        <Input
+          id={`${prefix}-name`}
+          value={form.name}
+          onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
+          placeholder={form.social === 'linkedin' ? 'LinkedIn Main' : 'Reddit Main'}
+          required
+        />
       </div>
 
       {form.social === 'reddit' ? (
@@ -493,29 +499,7 @@ export function AuthsPage() {
       ) : (
         <div className='space-y-3'>
           <p className='text-sm font-medium'>LinkedIn credentials</p>
-          <div className='grid gap-3 md:grid-cols-2'>
-            <div className='space-y-2'>
-              <Label htmlFor={`${prefix}-linkedin-headless`}>Headless</Label>
-              <Input
-                id={`${prefix}-linkedin-headless`}
-                value={form.linkedin_headless}
-                onChange={(event) => setForm((prev) => ({ ...prev, linkedin_headless: event.target.value }))}
-              />
-            </div>
-            <div className='space-y-2'>
-              <Label htmlFor={`${prefix}-linkedin-wait-seconds`}>Wait seconds</Label>
-              <Input
-                id={`${prefix}-linkedin-wait-seconds`}
-                value={form.linkedin_wait_seconds}
-                onChange={(event) => setForm((prev) => ({ ...prev, linkedin_wait_seconds: event.target.value }))}
-              />
-            </div>
-            <div className='space-y-2 md:col-span-2'>
-              <Label>User data dir</Label>
-              <p className='rounded-md border bg-muted/30 px-3 py-2 font-mono text-xs'>
-                {buildLinkedinProfileDir(form.name, form.id || 'generated-id')}
-              </p>
-            </div>
+          <div className='grid gap-3'>
             <div className='md:col-span-2'>
               <p className='text-xs text-muted-foreground'>
                 No username/password required. On create, a browser opens so you can save a LinkedIn session.

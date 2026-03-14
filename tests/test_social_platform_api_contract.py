@@ -285,5 +285,38 @@ def test_auth_id_is_generated_as_uuid_and_linkedin_dir_is_derived(tmp_path, monk
         assert len(payload['auths']) == 1
         item = payload['auths'][0]
         assert re.fullmatch(r'[0-9a-fA-F-]{36}', item['id'])
-        assert item['linkedin_user_data_dir'].startswith('~/.reddrop/linkedin/')
+        assert item['linkedin_user_data_dir'].startswith('.reddrop/auth/linkedin/')
+        assert not item['linkedin_user_data_dir'].startswith('~/.reddrop/')
         assert item['linkedin_user_data_dir'].endswith(item['id'][:8])
+
+
+def test_auths_are_persisted_under_split_reddit_and_linkedin_paths(tmp_path, monkeypatch) -> None:
+    home, _runs, _jobs = _setup_isolated_runtime(tmp_path, monkeypatch)
+    with TestClient(api_main.app) as client:
+        saved = client.put(
+            '/auths',
+            json={
+                'auths': [
+                    {
+                        'id': 'reddit-main',
+                        'name': 'Reddit Main',
+                        'social': 'reddit',
+                        'reddit_username': 'alice',
+                        'reddit_password': 'pw',
+                    },
+                    {
+                        'id': 'linkedin-main',
+                        'name': 'LinkedIn Main',
+                        'social': 'linkedin',
+                    },
+                ]
+            },
+        )
+        assert saved.status_code == 200
+
+    reddit_dir = home / 'auth' / 'reddit'
+    linkedin_dir = home / 'auth' / 'linkedin'
+    assert reddit_dir.exists()
+    assert linkedin_dir.exists()
+    assert (reddit_dir / 'auths.json').exists()
+    assert (linkedin_dir / 'auths.json').exists()
