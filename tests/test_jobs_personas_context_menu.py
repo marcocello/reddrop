@@ -17,6 +17,7 @@ def test_jobs_duplicate_opens_prefilled_create_modal() -> None:
     assert 'min_similarity_score: job.min_similarity_score ?? 0.35' in source
     assert 'active: job.active' in source
     assert "time_filter: job.time_filter ?? 'week'" in source
+    assert "sort_by: job.sort_by ?? 'relevance'" in source
     assert 'setCreateDialogOpen(true)' in source
 
 

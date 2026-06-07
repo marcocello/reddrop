@@ -9,7 +9,7 @@ Feature: Auth object management and social login bootstrap
   Scenario: Create a Reddit auth object
     Given I open the Auths page
     When I create a new auth object with social "reddit"
-    And I provide Reddit username and password credentials
+    And I provide Reddit client ID, client secret, user agent, username, and password credentials
     Then the auth object is saved
     And it is listed by its username in the Auths page
     And it is selectable in the Jobs form
@@ -52,23 +52,32 @@ Feature: Auth object management and social login bootstrap
   Scenario: Sidebar navigation groups are aligned with the workflow
     Given I open the authenticated dashboard
     When the sidebar is rendered
-    Then it shows a "Workflows" group containing Jobs, Threads, and Personas
+    Then it shows a "Workflows" group containing Personas, Search Queries, and Jobs
+    And it shows a "Results" group containing Conversations
     And it shows a "Configuration" group containing Auths and Settings
 
   Scenario: LinkedIn login bootstrap runs from API without module resolution errors
     Given a LinkedIn auth object exists
     When I trigger LinkedIn login from that auth object
     Then the backend executes the login bootstrap flow through LinkedinService successfully
-    And the browser is opened in private mode for the login flow
+    And the browser uses the auth-specific persistent profile directory for the login flow
 
   Scenario: Auth table shows username and health status
     Given I open the Auths page
     Then each row shows a short auth ID
     And it shows username instead of name
+    And for LinkedIn auth it reads username from the LinkedIn user data directory session
     And it shows status as a health check badge
     And Reddit status is "ok" only when Reddit credentials authenticate successfully
     And LinkedIn status is "ok" only when a saved LinkedIn session cookie is present
     And the API exposes explicit status checks at `POST /auths/{auth_ref}/validate` and `POST /auths/validate`
+
+  Scenario: Auth catalog refresh is read-only
+    Given auth objects already exist
+    When the UI refreshes and calls `GET /auths`
+    Then the backend does not trigger Reddit or LinkedIn live validation
+    And LinkedIn username is returned from persisted auth data
+    And status reflects the last persisted validation result
 
 ## Constraints
 - Settings page remains LLM-only; social credentials are managed in Auths.
@@ -77,6 +86,8 @@ Feature: Auth object management and social login bootstrap
 - Auth profiles are persisted under `backend/.reddrop/auth/reddit/auths.json` and `backend/.reddrop/auth/linkedin/auths.json`.
 - LinkedIn `user_data_dir` must be project-local under `backend/.reddrop/auth/linkedin/` and must not use `~/.reddrop`.
 - Auth create modal does not expose `name` for either social.
+- Backend revalidates auth health status whenever `/auths` are re-saved.
+- Backend must not trigger provider validation during `GET /auths` catalog refresh.
 - Job config is type-scoped:
-  - `search` jobs persist `topic`, `time_filter`, `subreddit_limit`, `threads_limit` and do not persist reply-only fields.
+  - `search` jobs persist `topic` and `threads_limit`; Reddit search additionally persists `time_filter` + `subreddit_limit`; LinkedIn search additionally persists `scroll_rounds`.
   - `reply` jobs persist `source_job_id`, `personas`, `min_similarity_score`, `replies_per_iteration` and do not persist search-only fields.

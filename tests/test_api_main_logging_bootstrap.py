@@ -62,3 +62,24 @@ def test_api_http_errors_are_logged_to_terminal(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 400
     assert any("Job not found" in item for item in error_messages)
+
+
+def test_api_direct_http_errors_are_logged_to_terminal(tmp_path, monkeypatch) -> None:
+    _setup_isolated_runtime(tmp_path, monkeypatch)
+    error_messages: list[str] = []
+
+    class _FakeLogger:
+        def info(self, message: str, *args) -> None:
+            _ = (message, args)
+
+        def error(self, message: str, *args) -> None:
+            rendered = message % args if args else message
+            error_messages.append(rendered)
+
+    monkeypatch.setattr(api_main, "logger", _FakeLogger())
+
+    with TestClient(api_main.app) as client:
+        response = client.post("/send", json={})
+
+    assert response.status_code == 400
+    assert any("search_file is required." in item for item in error_messages)

@@ -54,30 +54,33 @@ def handle(args, emit, error, deps: SendDependencies) -> int:
     if deps.should_stop():
         return error("Run stopped by user request.")
 
-    search_path = _resolve_search_file(args.search_file, deps.runs_dir)
-    if search_path is None:
+    search_query = _resolve_search_file(args.search_file, deps.runs_dir)
+    if search_query is None:
         return error(f"Search file not found: {args.search_file}")
 
     storage = deps.search_storage_cls(deps.runs_dir)
-    artifact = storage.get_search_by_path(search_path)
+    artifact = storage.get_search_by_path(search_query)
     if artifact is None:
-        return error(f"Invalid search artifact: {search_path.name}")
+        return error(f"Invalid search artifact: {search_query.name}")
 
     social = "reddit"
     job = None
     if deps.job_store_factory is not None:
         try:
-            job = deps.job_store_factory().get_job_by_id(artifact.id)
+            job_store = deps.job_store_factory()
+            job = job_store.get_job_by_id(artifact.id)
             if job is not None:
                 social = _resolve_social(getattr(job, "social", "reddit"))
-        except Exception:
-            social = "reddit"
-            job = None
+        except Exception as exc:
+            return error(f"Failed to resolve job for artifact {search_query.name}: {exc}")
 
     if deps.prepare_job is not None and job is not None:
-        deps.prepare_job(job)
+        try:
+            deps.prepare_job(job)
+        except Exception as exc:
+            return error(str(exc))
 
-    deps.logger.info("Sending replies from file %s using %s.", search_path.name, social)
+    deps.logger.info("Sending replies from file %s using %s.", search_query.name, social)
     if social == "linkedin":
         if deps.linkedin_service_cls is None:
             return error("LinkedIn service is not configured.")
@@ -118,11 +121,11 @@ def handle(args, emit, error, deps: SendDependencies) -> int:
         updated_at=deps.now_fn(),
         conversations=updated_conversations,
     )
-    storage.save_search_at_path(search_path, updated_artifact)
+    storage.save_search_at_path(search_query, updated_artifact)
 
     deps.logger.info(
         "Send completed for %s: sent=%s, already_commented=%s, candidates=%s, total=%s.",
-        search_path.name,
+        search_query.name,
         sent_count,
         skipped_count,
         total_reply_candidates,
@@ -130,8 +133,8 @@ def handle(args, emit, error, deps: SendDependencies) -> int:
     )
     emit(
         {
-            "search_file": search_path.name,
-            "reply_file": search_path.name,
+            "search_file": search_query.name,
+            "reply_file": search_query.name,
             "sent": sent_count,
             "already_commented": skipped_count,
             "candidates": total_reply_candidates,

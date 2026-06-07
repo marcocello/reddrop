@@ -30,8 +30,7 @@ def test_personas_can_be_saved_and_loaded_from_project_local_store(tmp_path, mon
                 'personas': [
                     {
                         'name': 'seller',
-                        'description': 'B2B founder',
-                        'objective': 'Book intro calls',
+                        'objective': 'Book intro calls. Be direct and practical.',
                     }
                 ]
             },
@@ -40,6 +39,7 @@ def test_personas_can_be_saved_and_loaded_from_project_local_store(tmp_path, mon
         payload = saved.json()
         assert len(payload['personas']) == 1
         assert payload['personas'][0]['name'] == 'seller'
+        assert payload['personas'][0]['objective'] == 'Book intro calls. Be direct and practical.'
         assert payload['source'] == str(home / 'personas.json')
 
         listed = client.get('/personas')
@@ -47,3 +47,4 @@ def test_personas_can_be_saved_and_loaded_from_project_local_store(tmp_path, mon
         listed_payload = listed.json()
         assert len(listed_payload['personas']) == 1
         assert listed_payload['personas'][0]['name'] == 'seller'
+        assert listed_payload['personas'][0]['objective'] == 'Book intro calls. Be direct and practical.'

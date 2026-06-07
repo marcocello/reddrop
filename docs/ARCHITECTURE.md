@@ -8,12 +8,13 @@
 - `backend/cli/commands/reply.py`: `reply` command handler.
 - `backend/cli/commands/send.py`: `send` command handler.
 - `backend/api/main.py`: FastAPI layer exposing command-equivalent operations.
-- `backend/api/job_runtime.py`: in-memory job process manager for start/stop/restart status.
+- `backend/api/job_runtime.py`: runtime job process manager for start/stop/restart status and persisted per-job run logs.
 - `backend/services/`: discovery, persistence, LLM, and persona access.
 - `backend/services/reddit_service.py`: Reddit discovery and posting integration.
 - `backend/services/linkedin_service.py`: LinkedIn headless discovery, posting integration, and interactive login bootstrap.
 - `backend/services/settings_store.py`: load/save `settings.yaml` runtime LLM settings (`openrouter`) and sync values into process env.
 - `backend/services/auth_store.py`: load/save auth catalog split by social under `backend/.reddrop/auth/reddit/auths.json` and `backend/.reddrop/auth/linkedin/auths.json`.
+- `backend/services/search_query_store.py`: load/save reusable search-query drafts/saved plans in `backend/.reddrop/search_queries.json`.
 - `backend/config/log.py`: shared logging configuration and `setup_logging`.
 - `backend/models.py`: job/search data contracts.
 - `frontend/`: React + Vite dashboard derived from `satnaing/shadcn-admin`, trimmed to jobs/personas/threads/settings views.
@@ -31,29 +32,35 @@
 
 ## Data Contracts
 - Job config file: `backend/.reddrop/jobs_config.json`.
+- Search query config file: `backend/.reddrop/search_queries.json`.
 - Auth catalog files: `backend/.reddrop/auth/reddit/auths.json` and `backend/.reddrop/auth/linkedin/auths.json`.
 - Search artifacts: `backend/.reddrop/runs/search_<job_id_prefix8>.json` (one file per job).
+- Consolidated conversation index: `backend/.reddrop/runs/conversation.json` (all persisted artifacts + flattened conversations).
 - Job `id` values are UUIDs generated automatically.
 - Job entries store shared fields `id`, `name`, `job_type` (`search` or `reply`), `social` (`reddit` or `linkedin`), `auth_id`, and `max_runtime_minutes`.
-- Search jobs additionally store `topic`, `time_filter`, `subreddit_limit`, and `threads_limit`.
+- Job `name` uniqueness is enforced case-insensitively at API create time.
+- Search jobs store `search_query_id`, `search_query_version`, and runtime tuning fields (`threads_limit`, plus social-specific controls). Search jobs do not persist `topic` or `search_plan` snapshots.
 - Reply jobs additionally store `source_job_id`, `replies_per_iteration`, `min_similarity_score`, and `personas`.
 - Job `name` is a no-space identifier (`[A-Za-z0-9_-]+`).
 - Search artifact payload includes `id` (job id), `created_at`, `updated_at`, and merged `conversations`.
-- Conversation rows include `reply` and `user_has_commented`, so search/reply/send state is unified in one file per job.
+- Conversation rows include deterministic UUID `id` derived from canonical conversation URL (fallback to preserved UUID when URL is unavailable), plus `reply` and `user_has_commented`, so search/reply/send state is unified in one file per job.
 
 ## Integration Rules
 - Discovery routes by job `social`:
   - `reddit` uses `backend.services.reddit_service.RedditService.discover_relevant_threads`.
-  - `linkedin` uses `backend.services.linkedin_service.LinkedinService.discover_relevant_threads`.
-- `search` first writes an initialized artifact (empty conversations) and then updates the same job file on completion.
+  - `linkedin` uses `backend.services.linkedin_service.LinkedinService.discover_relevant_threads` with native in-process Playwright extraction only (no external bridge command path).
+- `search` first writes an initialized artifact that preserves existing conversations (so rerun start cannot wipe rows) and then updates the same job file on completion.
 - Conversation merge behavior is keyed by (`thread_id`, `subreddit`) with incoming matches replacing previous entries.
+- Conversation merge behavior dedupes by URL on every save (including first write) so the same canonical URL is persisted once, while preserving existing reply/send state.
 - `search` accepts an optional job `name` positional argument; without it, all jobs are executed.
 - Discovery tuning flags are accepted by `add` and persisted in job config.
 - `search` does not accept discovery tuning flags and always uses job-config values.
+- Search jobs require `search_query_id` at creation time; direct topic/plan create payloads are rejected.
 - Reply jobs must match the social platform of their linked source search job.
 - Search jobs require `auth_id`, and auth social must match job social.
+- Search runtime resolves `topic` + `search_plan` from the referenced saved search query and fails when the path is missing, unsaved, or version-mismatched.
 - Reply jobs inherit `auth_id` from their linked source search job.
-- Search/send runtime paths hydrate platform credentials from auth profiles into process env before service instantiation.
+- Search/send runtime paths prepare auth per job and inject it into social service instances for that run (no process-global env mutation in backend runtime paths).
 - Runtime job execution is type-split:
   - `search` jobs run search + rank only.
   - `reply` jobs run reply generation only, using artifacts from their linked `source_job_id` search job.
@@ -62,28 +69,56 @@
 - `reply` uses `ReplyGenerationService` for draft text and writes drafts into `conversation.reply` in `search_*.json`.
 - `reply` selection excludes conversations that already have a non-empty `reply`, applies a minimum similarity threshold (`semantic_similarity >= 0.35`), and reranks remaining entries by `semantic_similarity` descending before taking top `--replies`.
 - `search` persistence is handled by `SearchStorage` (`backend/services/search_storage.py`).
-- `SearchStorage` provides file locking (`flock`) + atomic replace writes for all search/reply/send updates.
+- `SearchStorage` provides file locking (`flock`) via a single shared `backend/.reddrop/runs/.search_storage.lock` file + atomic replace writes for all search/reply/send updates.
+- `SearchStorage` refreshes `backend/.reddrop/runs/conversation.json` after search artifact writes and cleans legacy per-artifact lock files (`search_*.json.lock`) on initialization.
 - `JobConfigStore` now also uses file locking (`flock`) + atomic replace writes for `backend/.reddrop/jobs_config.json`.
+- `AuthStore` and `PersonaStore` use file locking (`flock`) + atomic replace writes for auth/persona catalog persistence.
+- `SearchQueryStore` uses file locking (`flock`) + atomic replace writes for `backend/.reddrop/search_queries.json`.
 - `ReplyGenerationService` extracts tone/style from thread title/body during `reply` and applies it to final reply generation.
 - Discovery (`search`) does not perform tone/style extraction.
 - `send` routes posting by job `social` (`RedditService.post_comment` or `LinkedinService.post_comment`) and updates `user_has_commented` in the same `search_*.json` artifact.
+- LinkedIn `thread_id` may be a canonical post URL (`https://.../posts/.../`) or an URN (`urn:li:activity:...`); posting URL resolution must normalize both forms.
+- LinkedIn discovery extracts engagement/time hints from card text when available, supports runtime `time_filter` (`hour|day|week|month|year|all`), and supports `sort_by` (`relevance|recency|engagement`).
+- LinkedIn search-query generation stores a validated planned list of five possible LinkedIn content-search queries for the user topic; invalid URL/site-operator entries are discarded and sparse output is supplemented deterministically.
+- LinkedIn discovery preserves multiple saved search-plan queries, runs only those configured queries in plan order, and deduplicates posts across query passes.
+- LinkedIn discovery carries structured reaction/comment counts from result markup and uses them before falling back to text parsing.
+- LinkedIn discovery computes `semantic_similarity` against the search-topic context for each kept row when embedding dependencies are available; otherwise rows keep default `semantic_similarity=0.0` without failing discovery.
+- LinkedIn discovery builds faceted content-search URLs with `sortBy` and optional `datePosted` params (`past-24h|past-week|past-month|past-year`) to align with browser search behavior.
+- LinkedIn discovery accepts only canonical post permalinks (`/feed/update/urn:li:...` or valid `/posts/...activity-...`) and excludes company `/company/.../posts/` pages from persisted conversations.
+- LinkedIn conversation `title` is sourced from post body text when available and truncated to 90 characters for table readability.
+- LinkedIn discovery phase-1 parsing includes both feed cards and reusable search-result cards; phase-1 scrolling stops early after repeated rounds with no new unique URLs.
+- LinkedIn discovery phase-2 detail enrichment is bounded (default cap `12`, overridable per job or by `LINKEDIN_DETAIL_ENRICH_TOP_K`) and prioritizes rows missing timestamp/body richness.
+- LinkedIn discovery and send serialize Playwright access per persistent profile directory to avoid concurrent Chromium profile use.
+- LinkedIn bounded `time_filter` windows include unknown-timestamp rows by default for recall; strict exclusion is configurable via `LINKEDIN_INCLUDE_UNKNOWN_TIMESTAMPS_FOR_BOUNDED_FILTERS=false`.
+- LinkedIn discovery does not synthesize additional query variants at runtime; strict and broader query alternatives must come from the saved search plan.
+- LinkedIn timestamp resolution order is: absolute `published_iso` -> relative `published` label from post metadata only.
+- LinkedIn discovery must never infer timestamp from post body text; if no post-time metadata exists, created date remains unknown.
+- LinkedIn post send success requires verifiable submission signals (voyager POST 2xx or cleared editor), not just click-attempt success.
+- LinkedIn discovery requires Playwright at runtime and fails explicitly if Playwright is unavailable.
 - `reply` emits `search_file`, `reply_file`, `generated`, `total_with_replies`.
 - `send` emits `search_file`, `reply_file`, `sent`, `already_commented`, `candidates`, `total`.
 - FastAPI exposes `/health`, `/jobs/add`, `/search`, `/reply`, and `/send`, using the same command handlers/dependencies as CLI.
 - FastAPI also exposes API-first workflow endpoints for frontend-only usage:
   - `POST /jobs`, `DELETE /jobs/{job}`, `POST /jobs/{job}/start`, `POST /jobs/{job}/stop`
+    - Deleting a search job with linked reply jobs requires explicit `cascade=true` and then deletes linked reply jobs together.
   - `PUT /jobs/{job}` exists but returns `405` because jobs are immutable after creation
-  - `GET /personas`, `PUT /personas` for persona catalog management
-  - `GET /auths`, `PUT /auths` for auth catalog management (`reddit`/`linkedin` auth objects)
-    - `GET /auths` includes computed `status` (`ok`/`invalid`) per auth for UI health badges
-      - Reddit status validates live credentials through `praw` login (`user.me()`).
-      - LinkedIn status validates saved browser session by checking `li_at` cookie in profile cookie DB.
+  - `GET /personas`, `PUT /personas`, `DELETE /personas/{persona}` for persona catalog management
+    - Deleting a persona with linked reply jobs requires explicit `cascade=true` and then deletes linked reply jobs together.
+  - `GET /auths`, `PUT /auths`, `DELETE /auths/{auth}` for auth catalog management (`reddit`/`linkedin` auth objects)
+    - `GET /auths` is non-validating and returns persisted auth rows for UI refresh.
+      - `status` is the last persisted validation result (`ok`/`invalid`).
+      - LinkedIn `linkedin_username` comes from persisted auth data.
+    - `PUT /auths` re-runs validation during save and persists the resulting `status`.
+      - For valid LinkedIn auths, username extraction runs from the saved LinkedIn user-data-dir session and is persisted.
     - `POST /auths/{auth}/validate` performs explicit provider-specific validation for a single auth object.
     - `POST /auths/validate` performs explicit provider-specific validation for all auth objects.
-  - `POST /auths/{auth}/linkedin/login` to run LinkedIn login bootstrap directly through `LinkedinService.login_and_save_session(...)` using selected auth runtime fields
-  - `GET /settings`, `PUT /settings` for runtime LLM/OpenRouter settings management only
+    - `POST /auths/{auth}/linkedin/login` also persists extracted LinkedIn username and refreshed auth status after a successful login flow.
+  - `GET /settings`, `PUT /settings` for runtime LLM/OpenRouter settings
+  - `GET /search-queries`, `POST /search-queries`, `PUT /search-queries/{query}`, `POST /search-queries/generate`, `POST /search-queries/{query}/save`, and `DELETE /search-queries/{query}` for search-query draft/save lifecycle
+    - Search-query generation is topic/social driven and does not require auth.
+    - Deleting a search query with linked jobs requires explicit `cascade=true` and then deletes linked jobs together.
   - `GET /threads` with JSON-artifact filters (`job_id`, `job_name`, `subreddit`, `min_similarity`, `only_open`, `has_reply`, paging), backed by an in-memory artifact cache keyed by run/job-config file snapshots
-  - `POST /threads/{job}/{subreddit}/{thread_id}/reply` and `POST /threads/{job}/{subreddit}/{thread_id}/send` for per-thread actions; `{job}` accepts either search-job or linked reply-job references
+  - `POST /threads/{job}/{subreddit}/{thread_id:path}/reply`, `POST /threads/{job}/{subreddit}/{thread_id:path}/send`, and `DELETE /threads/{job}/{subreddit}/{thread_id:path}` for per-thread actions; `{job}` accepts either search-job or linked reply-job references
 - FastAPI also exposes job lifecycle and artifact browsing endpoints (`/jobs`, `/jobs/status`, `/jobs/{name}/start|stop|restart`, `/artifacts/search*`, `/artifacts/reply*`) for frontend usage.
 - Job start/restart actions invoke in-process command handlers through the runtime manager; stop is cooperative cancellation via in-memory stop flags.
 - Autonomous runtime jobs do not auto-send replies; send remains an explicit action.
@@ -92,14 +127,19 @@
 - Discovery logs include output summaries for analysis intent/topics/keywords, discovered subreddits, generated queries, and candidate thread counts.
 - Job runtime logs are mirrored to both:
   - terminal output (for operator visibility),
-  - in-memory job-status log stream (`/jobs/{name}/status`) for the frontend job panel.
+  - persisted job-status log stream (`/jobs/{name}/status`) for the frontend job panel.
+- Runtime log history is retained across runs and backend restarts while the job exists, and is purged when the job is deleted.
 - `backend/services/llm_service.py` uses OpenRouter (`OPENROUTER_*`) and treats missing/unavailable LLM as a hard runtime failure (no demo fallback generation).
 - Modules that log should use `logger = setup_logging(__name__)` for a shared formatter/level policy.
 - Frontend consumes API only; no business logic is implemented in UI components.
-- Jobs UI supports create + lifecycle controls (activate/deactivate/start/stop/delete) with explicit job type selection (`search`/`reply`), social selection (`reddit`/`linkedin`), and source search-job linkage for reply jobs; existing jobs are read-only in details view.
+- Jobs UI supports create + lifecycle controls (activate/deactivate/start/stop/delete) with explicit job type selection (`search`/`reply`), social selection (`reddit`/`linkedin`), saved search-query linkage for search jobs, and source search-job linkage for reply jobs; existing jobs are read-only in details view.
+- Frontend includes a dedicated Search Queries page (table + modal generate + sheet draft/save) persisted via `/search-queries`.
+- Sidebar navigation is grouped as `Workflows` (Personas, Search Queries, Jobs), `Results` (Conversations), and `Configuration` (Auths, Settings).
+- Search-job UI controls are social-specific: Reddit exposes subreddit/time filters; LinkedIn exposes `time_filter`, `sort_by`, `scroll_rounds`, and posts limit.
 - Frontend threads/reply views are driven by `GET /threads` plus thread-level reply/send actions, rather than direct artifact file selection.
 - Table-based frontend views use shadcn-style toolbar + bordered table sections; create actions use modal dialogs while row details/editors open in right-side sheets.
 - Destructive frontend actions (job/persona deletion) use explicit confirmation dialogs before API calls are executed.
+- Multi-row selection delete actions use a shared bottom-centered floating selection bar for consistent UX across pages.
 - Threads UI uses shadcn data-table patterns (toolbar filters/search/pagination) and exposes row actions via a fixed right-most three-dots menu column.
 - Sortable table headers trigger direct click-based asc/desc toggling (no header sort context menu), and table columns support drag-based reordering via TanStack `columnOrder` state.
 - Threads UI does not expose a free-form persona input; reply actions resolve persona from the selected job configuration.
@@ -110,7 +150,7 @@
 - Auths create form exposes `social` first, then platform credentials; `name` is not user-editable.
 - LinkedIn auth forms expose only social selector and login trigger; runtime fields (`headless`, `wait seconds`, `user data dir`) are API-managed defaults.
 - Auths table shows short ID, username, social, and status badges; summary column is removed.
-- Frontend includes a dedicated Settings page for LLM/OpenRouter fields only, persisted via `/settings`.
+- Frontend includes a dedicated Settings page for LLM/OpenRouter fields, persisted via `/settings`.
 - Frontend does not expose a dedicated Replies page; reply drafting/sending is handled within Threads workflows.
 - Jobs and Threads headers use a split refresh control: left action triggers manual refresh, right side opens auto-refresh dropdown (`off`, `30s`, `1m`, `5m`, `15m`) with default `30s`.
 - Template sections not used by Reddrop are removed from active `src/` routes/features and parked under `frontend/_unused/`.

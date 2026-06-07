@@ -23,3 +23,10 @@ Given OpenRouter is missing or unavailable
 When reply generation or search analysis requests the LLM
 Then the backend raises an explicit runtime failure
 And it does not silently return demo/fallback generated reply text
+
+## Scenario: old run logs are retained while the job exists
+Given a job has completed multiple runs
+When runtime logs are requested from `/jobs/{name}/status`
+Then log entries from prior runs are still present
+And runtime log history survives backend process restart for existing jobs
+And runtime log history is purged when the job is deleted

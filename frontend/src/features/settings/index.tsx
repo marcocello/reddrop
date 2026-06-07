@@ -194,6 +194,7 @@ export function SettingsPage() {
             </div>
           </div>
         </section>
+
       </Main>
     </>
   )

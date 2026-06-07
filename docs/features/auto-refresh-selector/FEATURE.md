@@ -20,15 +20,17 @@ When the UI is rendered
 Then no `Auto-refresh:` label text is shown
 And a manual refresh action remains available inside the split control
 
-## Scenario: Jobs and Threads headers use consistent actions
+## Scenario: Jobs header keeps create and Threads header is refresh-only
 Given the Jobs and Threads pages are open
 When header actions are rendered
-Then both pages show a `Create job` action
-And the `Create job` action appears before the split refresh control
+Then the Jobs page shows a `Create job` action
+And the split refresh control appears before the `Create job` action in Jobs
+And the Threads page does not show a `Create job` action
 And both pages keep manual and auto-refresh actions in the split control
 
-## Scenario: Personas header does not include a refresh action
-Given the Personas page is open
+## Scenario: Create-action pages use refresh-first ordering
+Given the Personas, Auths, and Search Queries pages are open
 When header actions are rendered
-Then only `Create persona` is shown
-And no manual refresh button is rendered
+Then each page shows a `Refresh` action first
+And each page shows a `Create ...` action second
+And each `Create ...` button includes a plus icon

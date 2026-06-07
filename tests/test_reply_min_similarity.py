@@ -26,7 +26,7 @@ class _FakeSearchStorage:
 
 class _FakePersonaStore:
     def get_persona(self, _name: str) -> PersonaProfile | None:
-        return PersonaProfile(name="seller", description="desc", objective="obj")
+        return PersonaProfile(name="seller", objective="obj. direct tone.")
 
 
 class _FakeReplyGenerator:

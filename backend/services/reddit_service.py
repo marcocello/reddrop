@@ -21,6 +21,8 @@ def _never_stop() -> bool:
 class RedditService:
     """Service for Reddit discovery and posting."""
 
+    _DEFAULT_SUBREDDITS = ["startups", "entrepreneur", "smallbusiness", "business", "marketing"]
+
     @staticmethod
     def validate_credentials(
         *,
@@ -50,15 +52,22 @@ class RedditService:
         except Exception:
             return False
 
-    def __init__(self) -> None:
+    def __init__(self, auth: Any | None = None) -> None:
         self.initialization_error = ""
         try:
             SettingsStore().load()
-            client_id = os.getenv("REDDIT_CLIENT_ID")
-            client_secret = os.getenv("REDDIT_CLIENT_SECRET")
-            user_agent = os.getenv("REDDIT_USER_AGENT", "Reddrop:v1.0")
-            username = os.getenv("REDDIT_USERNAME")
-            password = os.getenv("REDDIT_PASSWORD")
+            if auth is None:
+                client_id = (os.getenv("REDDIT_CLIENT_ID") or "").strip()
+                client_secret = (os.getenv("REDDIT_CLIENT_SECRET") or "").strip()
+                user_agent = (os.getenv("REDDIT_USER_AGENT") or "Reddrop:v1.0").strip()
+                username = (os.getenv("REDDIT_USERNAME") or "").strip()
+                password = (os.getenv("REDDIT_PASSWORD") or "").strip()
+            else:
+                client_id = str(getattr(auth, "reddit_client_id", "")).strip()
+                client_secret = str(getattr(auth, "reddit_client_secret", "")).strip()
+                user_agent = str(getattr(auth, "reddit_user_agent", "")).strip() or "Reddrop:v1.0"
+                username = str(getattr(auth, "reddit_username", "")).strip()
+                password = str(getattr(auth, "reddit_password", "")).strip()
 
             if not all([client_id, client_secret]):
                 raise ValueError("Missing Reddit API credentials.")
@@ -67,8 +76,8 @@ class RedditService:
                 client_id=client_id,
                 client_secret=client_secret,
                 user_agent=user_agent,
-                username=username,
-                password=password,
+                username=(username or None),
+                password=(password or None),
                 check_for_async=False,
             )
             self.reddit.user.me()
@@ -87,6 +96,7 @@ class RedditService:
         threads_limit: int = 20,
         job_id: str | None = None,
         stop_requested: Callable[[], bool] | None = None,
+        search_plan: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         if not self.reddit:
             raise RuntimeError(self.initialization_error)
@@ -98,48 +108,63 @@ class RedditService:
 
         try:
             self._raise_if_stopped(should_stop)
-            _log_info("step 1/5: Analyzing topic to extract intent and keywords.")
-            content_analysis = self._analyze_content(content)
-            self._raise_if_stopped(should_stop)
+            locked_plan = self._normalize_locked_search_plan(search_plan=search_plan, topic=content)
+            locked_mode = search_plan is not None
+            if locked_mode:
+                content_analysis = {
+                    "topics": list(locked_plan["topics"]),
+                    "intent": "locked",
+                    "domain": "locked",
+                    "suggested_subreddits": list(locked_plan["subreddits"]),
+                    "content_type": "locked",
+                    "semantic_keywords": list(locked_plan["queries"]),
+                }
+                subreddit_names = list(locked_plan["subreddits"])
+                search_queries = list(locked_plan["queries"])
+                _log_info("step 1/5: Using locked search plan inputs from job configuration.")
+                _log_info(
+                    "step 1/5 output: topics=%s, subreddits=%s, search_queries=%s.",
+                    self._preview_values(content_analysis.get("topics"), max_items=10),
+                    self._preview_values(subreddit_names, max_items=10),
+                    self._preview_values(search_queries, max_items=10),
+                )
+            else:
+                _log_info("step 1/5: Analyzing topic to extract intent and keywords.")
+                content_analysis = self._analyze_content(content)
+                self._raise_if_stopped(should_stop)
 
-            intent = str(content_analysis.get("intent", "unknown"))
-            topics = self._preview_values(content_analysis.get("topics"), max_items=5)
-            keywords = self._preview_values(content_analysis.get("semantic_keywords"), max_items=5)
-            _log_info(
-                "step 1/5 output: topic=%r, intent=%s, topics=%s, keywords=%s.",
-                content,
-                intent,
-                topics,
-                keywords,
-            )
+                intent = str(content_analysis.get("intent", "unknown"))
+                topics = self._preview_values(content_analysis.get("topics"), max_items=5)
+                keywords = self._preview_values(content_analysis.get("semantic_keywords"), max_items=5)
+                _log_info(
+                    "step 1/5 output: topic=%r, intent=%s, topics=%s, keywords=%s.",
+                    content,
+                    intent,
+                    topics,
+                    keywords,
+                )
 
-            _log_info("step 2/5: Discovering relevant subreddits (limit=%s).", subreddit_limit)
-            discovered_subreddits = self._find_relevant_subreddits(
-                content_analysis,
-                limit=subreddit_limit,
-                stop_requested=should_stop,
-            )
-            self._raise_if_stopped(should_stop)
-            if not discovered_subreddits:
-                _log_info("No subreddits discovered from analysis. Using default subreddit set.")
-                discovered_subreddits = [
-                    {"name": "startups"},
-                    {"name": "entrepreneur"},
-                    {"name": "smallbusiness"},
-                    {"name": "business"},
-                    {"name": "marketing"},
-                ][:subreddit_limit]
+                _log_info("step 2/5: Discovering relevant subreddits (limit=%s).", subreddit_limit)
+                discovered_subreddits = self._find_relevant_subreddits(
+                    content_analysis,
+                    limit=subreddit_limit,
+                    stop_requested=should_stop,
+                )
+                self._raise_if_stopped(should_stop)
+                if not discovered_subreddits:
+                    _log_info("No subreddits discovered from analysis. Using default subreddit set.")
+                    discovered_subreddits = [{"name": name} for name in self._DEFAULT_SUBREDDITS[:subreddit_limit]]
 
-            subreddit_names = [sub["name"] for sub in discovered_subreddits]
-            _log_info("step 2/5 output: discovered_subreddits=%s.", self._preview_values(subreddit_names, max_items=10))
+                subreddit_names = [sub["name"] for sub in discovered_subreddits]
+                _log_info("step 2/5 output: discovered_subreddits=%s.", self._preview_values(subreddit_names, max_items=10))
 
-            _log_info("step 3/5: Generating Reddit search queries.")
-            search_queries = self._generate_search_queries(content_analysis)
-            self._raise_if_stopped(should_stop)
-            if not search_queries:
-                search_queries = content_analysis.get("topics", [])[:3] or [content]
-                _log_info("No LLM search queries generated. Falling back to topic-based queries.")
-            _log_info("step 3/5 output: search_queries=%s.", self._preview_values(search_queries, max_items=10))
+                _log_info("step 3/5: Generating Reddit search queries.")
+                search_queries = self._generate_search_queries(content_analysis)
+                self._raise_if_stopped(should_stop)
+                if not search_queries:
+                    search_queries = content_analysis.get("topics", [])[:3] or [content]
+                    _log_info("No LLM search queries generated. Falling back to topic-based queries.")
+                _log_info("step 3/5 output: search_queries=%s.", self._preview_values(search_queries, max_items=10))
 
             _log_info(
                 "step 4/5: Searching %s subreddit(s) (time_filter=%s, threads_limit=%s).",
@@ -177,6 +202,48 @@ class RedditService:
             )
         except Exception as exc:
             raise RuntimeError(f"Reddit discovery failed: {exc}") from exc
+
+    def generate_search_plan(self, *, topic: str, subreddit_limit: int = 5) -> dict[str, list[str]]:
+        normalized_topic = str(topic or "").strip()
+        if not normalized_topic:
+            raise ValueError("topic is required")
+
+        normalized_limit = max(1, int(subreddit_limit or 1))
+
+        try:
+            content_analysis = self._analyze_content(normalized_topic)
+        except Exception:
+            content_analysis = {
+                "topics": [normalized_topic],
+                "suggested_subreddits": list(self._DEFAULT_SUBREDDITS[:normalized_limit]),
+                "semantic_keywords": [normalized_topic],
+            }
+
+        topics = self._normalize_plan_items(content_analysis.get("topics"), fallback=[normalized_topic])
+        try:
+            generated_queries = self._generate_search_queries(content_analysis)
+        except Exception:
+            generated_queries = []
+        queries = self._normalize_plan_items(generated_queries, fallback=topics[:3] or [normalized_topic])
+
+        subreddits: list[str] = []
+        if self.reddit is not None:
+            try:
+                discovered = self._find_relevant_subreddits(content_analysis, limit=normalized_limit)
+                subreddits = self._normalize_subreddit_names([item.get("name") for item in discovered])
+            except Exception:
+                subreddits = []
+        if not subreddits:
+            suggested = content_analysis.get("suggested_subreddits")
+            subreddits = self._normalize_subreddit_names(suggested)
+        if not subreddits:
+            subreddits = list(self._DEFAULT_SUBREDDITS[:normalized_limit])
+
+        return {
+            "topics": topics,
+            "subreddits": subreddits[:normalized_limit],
+            "queries": queries,
+        }
 
     def _analyze_content(self, content: str) -> dict[str, Any]:
         try:
@@ -377,6 +444,7 @@ class RedditService:
         except Exception:
             pass
 
+        created_utc = self._normalize_submission_created_utc(getattr(submission, "created_utc", None))
         return {
             "id": submission.id,
             "title": submission.title,
@@ -384,7 +452,7 @@ class RedditService:
             "url": f"https://reddit.com{submission.permalink}",
             "score": submission.score,
             "num_comments": submission.num_comments,
-            "created_utc": submission.created_utc,
+            "created_utc": created_utc,
             "selftext": submission.selftext,
             "author": str(submission.author) if submission.author else "[deleted]",
             "is_self": submission.is_self,
@@ -392,6 +460,16 @@ class RedditService:
             "search_query": search_query,
             "user_has_commented": user_has_commented,
         }
+
+    @staticmethod
+    def _normalize_submission_created_utc(raw: object) -> float | None:
+        try:
+            value = float(raw)  # type: ignore[arg-type]
+        except Exception:
+            return None
+        if value <= 0:
+            return None
+        return value
 
     @staticmethod
     def _preview_values(values: Any, max_items: int = 5) -> str:
@@ -460,3 +538,63 @@ class RedditService:
     def _raise_if_stopped(stop_requested: Callable[[], bool]) -> None:
         if stop_requested():
             raise RuntimeError("Run stopped by user request.")
+
+    @staticmethod
+    def _normalize_plan_items(values: Any, *, fallback: list[str] | None = None) -> list[str]:
+        source = values if isinstance(values, list) else []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in source:
+            if not isinstance(item, str):
+                continue
+            token = item.strip()
+            if not token:
+                continue
+            lowered = token.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            normalized.append(token)
+        if normalized:
+            return normalized
+        return list(fallback or [])
+
+    @staticmethod
+    def _normalize_subreddit_names(values: Any) -> list[str]:
+        source = values if isinstance(values, list) else []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in source:
+            if not isinstance(item, str):
+                continue
+            token = item.strip().lower()
+            if token.startswith("r/"):
+                token = token[2:]
+            token = token.strip()
+            if not token:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            normalized.append(token)
+        return normalized
+
+    def _normalize_locked_search_plan(self, *, search_plan: dict[str, Any] | None, topic: str) -> dict[str, list[str]]:
+        topic_value = str(topic or "").strip()
+        if not isinstance(search_plan, dict):
+            return {
+                "topics": [topic_value] if topic_value else [],
+                "subreddits": list(self._DEFAULT_SUBREDDITS),
+                "queries": [topic_value] if topic_value else [],
+            }
+
+        topics = self._normalize_plan_items(search_plan.get("topics"), fallback=[topic_value] if topic_value else [])
+        queries = self._normalize_plan_items(search_plan.get("queries"), fallback=[topic_value] if topic_value else [])
+        subreddits = self._normalize_subreddit_names(search_plan.get("subreddits"))
+        if not subreddits:
+            subreddits = list(self._DEFAULT_SUBREDDITS)
+        return {
+            "topics": topics,
+            "subreddits": subreddits,
+            "queries": queries,
+        }

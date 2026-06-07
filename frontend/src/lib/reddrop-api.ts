@@ -1,12 +1,34 @@
 export type JobType = 'search' | 'reply'
 export type SocialPlatform = 'reddit' | 'linkedin'
 
+export type SearchPlan = {
+  topics?: string[]
+  subreddits?: string[]
+  queries?: string[]
+  query?: string | null
+}
+
+export type SearchQuery = {
+  id: string
+  name: string
+  social: SocialPlatform
+  topic: string
+  plan: SearchPlan
+  status: 'draft' | 'saved'
+  version: number
+  created_at: string
+  updated_at: string
+  saved_at?: string | null
+}
+
 export type Job = {
   id: string
   name: string
   job_type: JobType
   social: SocialPlatform
   auth_id?: string | null
+  search_query_id?: string | null
+  search_query_version?: number | null
   source_job_id?: string | null
   topic?: string
   min_similarity_score?: number
@@ -14,6 +36,13 @@ export type Job = {
   time_filter?: string
   subreddit_limit?: number
   threads_limit?: number
+  scroll_rounds?: number
+  sort_by?: string
+  selector_wait_timeout_seconds?: number
+  detail_wait_timeout_seconds?: number
+  max_comment_expand_clicks?: number
+  detail_enrich_top_k?: number
+  search_plan?: SearchPlan
   replies_per_iteration?: number
   max_runtime_minutes: number
   personas?: string[]
@@ -44,6 +73,7 @@ export type JobRuntimeLog = {
 }
 
 export type ThreadItem = {
+  conversation_id: string
   job_id: string
   job_name: string
   social?: SocialPlatform
@@ -62,6 +92,7 @@ export type ThreadItem = {
   score: number
   num_comments: number
   created_utc?: string | number | null
+  published_at?: string | null
   selftext: string
   semantic_similarity: number
   user_has_commented: boolean
@@ -78,11 +109,23 @@ export type ThreadListResponse = {
   offset: number
 }
 
+export type DeleteThreadResponse = {
+  deleted: boolean
+  conversation_id: string
+  job_id: string
+  thread_id: string
+  subreddit: string
+  search_file: string
+  updated_at: string
+}
+
 export type UpsertJobPayload = {
   name: string
   job_type: JobType
   social: SocialPlatform
   auth_id?: string | null
+  search_query_id?: string | null
+  search_query_version?: number | null
   source_job_id?: string | null
   topic?: string
   min_similarity_score?: number
@@ -90,6 +133,13 @@ export type UpsertJobPayload = {
   time_filter?: string
   subreddit_limit?: number
   threads_limit?: number
+  scroll_rounds?: number
+  sort_by?: string
+  selector_wait_timeout_seconds?: number
+  detail_wait_timeout_seconds?: number
+  max_comment_expand_clicks?: number
+  detail_enrich_top_k?: number
+  search_plan?: SearchPlan
   replies_per_iteration?: number
   max_runtime_minutes: number
   personas?: string[]
@@ -97,7 +147,6 @@ export type UpsertJobPayload = {
 
 export type PersonaProfile = {
   name: string
-  description: string
   objective: string
 }
 
@@ -120,6 +169,7 @@ export type AuthProfile = {
   reddit_user_agent: string
   reddit_username: string
   reddit_password: string
+  linkedin_username: string
   linkedin_email: string
   linkedin_password: string
   linkedin_headless: string
@@ -177,6 +227,28 @@ export type ThreadListParams = {
   offset?: number
 }
 
+export type SearchQueriesResponse = {
+  search_queries: SearchQuery[]
+}
+
+export type UpsertSearchQueryPayload = {
+  name: string
+  social: SocialPlatform
+  topic: string
+  plan: SearchPlan
+}
+
+export type GenerateSearchQueryPayload = {
+  name?: string
+  social: SocialPlatform
+  topic: string
+  subreddit_limit?: number
+}
+
+export type SearchQueryResponse = {
+  search_query: SearchQuery
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -223,8 +295,40 @@ export const reddropApi = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  listSearchQueries: () => request<SearchQueriesResponse>('/search-queries'),
+  createSearchQuery: (payload: UpsertSearchQueryPayload) =>
+    request<SearchQueryResponse>('/search-queries', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateSearchQuery: (searchQueryRef: string, payload: UpsertSearchQueryPayload) =>
+    request<SearchQueryResponse>(`/search-queries/${encodeURIComponent(searchQueryRef)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  generateSearchQuery: (payload: GenerateSearchQueryPayload) =>
+    request<SearchQueryResponse>('/search-queries/generate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  saveSearchQuery: (searchQueryRef: string) =>
+    request<SearchQueryResponse>(`/search-queries/${encodeURIComponent(searchQueryRef)}/save`, {
+      method: 'POST',
+    }),
+  deleteSearchQuery: (searchQueryRef: string) =>
+    request<{ deleted: boolean; id: string; name: string; cascade?: boolean }>(`/search-queries/${encodeURIComponent(searchQueryRef)}`, {
+      method: 'DELETE',
+    }),
+  deleteSearchQueryCascade: (searchQueryRef: string) =>
+    request<{ deleted: boolean; id: string; name: string; cascade?: boolean }>(`/search-queries/${encodeURIComponent(searchQueryRef)}?cascade=true`, {
+      method: 'DELETE',
+    }),
   deleteJob: (jobRef: string) =>
-    request<{ deleted: boolean; id: string; name: string }>(`/jobs/${encodeURIComponent(jobRef)}`, {
+    request<{ deleted: boolean; id: string; name: string; cascade?: boolean }>(`/jobs/${encodeURIComponent(jobRef)}`, {
+      method: 'DELETE',
+    }),
+  deleteJobCascade: (jobRef: string) =>
+    request<{ deleted: boolean; id: string; name: string; cascade?: boolean }>(`/jobs/${encodeURIComponent(jobRef)}?cascade=true`, {
       method: 'DELETE',
     }),
   startJob: (jobRef: string) =>
@@ -256,17 +360,37 @@ export const reddropApi = {
     request<ThreadItem>(`/threads/${encodeURIComponent(jobRef)}/${encodeURIComponent(subreddit)}/${encodeURIComponent(threadId)}/send`, {
       method: 'POST',
     }),
+  deleteThread: (jobRef: string, subreddit: string, threadId: string) =>
+    request<DeleteThreadResponse>(`/threads/${encodeURIComponent(jobRef)}/${encodeURIComponent(subreddit)}/${encodeURIComponent(threadId)}`, {
+      method: 'DELETE',
+    }),
   listPersonas: () => request<PersonasResponse>('/personas'),
   savePersonas: (payload: UpsertPersonasPayload) =>
     request<PersonasResponse>('/personas', {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
+  deletePersona: (personaRef: string) =>
+    request<{ deleted: boolean; name: string; cascade?: boolean }>(`/personas/${encodeURIComponent(personaRef)}`, {
+      method: 'DELETE',
+    }),
+  deletePersonaCascade: (personaRef: string) =>
+    request<{ deleted: boolean; name: string; cascade?: boolean }>(`/personas/${encodeURIComponent(personaRef)}?cascade=true`, {
+      method: 'DELETE',
+    }),
   listAuths: () => request<AuthsResponse>('/auths'),
   saveAuths: (payload: UpsertAuthsPayload) =>
     request<AuthsResponse>('/auths', {
       method: 'PUT',
       body: JSON.stringify(payload),
+    }),
+  deleteAuth: (authRef: string) =>
+    request<{ deleted: boolean; id: string; name: string; cascade?: boolean }>(`/auths/${encodeURIComponent(authRef)}`, {
+      method: 'DELETE',
+    }),
+  deleteAuthCascade: (authRef: string) =>
+    request<{ deleted: boolean; id: string; name: string; cascade?: boolean }>(`/auths/${encodeURIComponent(authRef)}?cascade=true`, {
+      method: 'DELETE',
     }),
   validateAuth: (authRef: string) =>
     request<AuthValidationResult>(`/auths/${encodeURIComponent(authRef)}/validate`, {

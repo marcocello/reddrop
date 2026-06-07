@@ -1,0 +1,44 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Backend and Frontend",
+            "dependsOn": [
+                "Run Backend Server",
+                "Run Frontend"
+            ],
+            "dependsOrder": "parallel",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Backend Server",
+            "type": "shell",
+            "command": "${workspaceFolder}/.venv/bin/python -m uvicorn backend.api.main:app --reload",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "presentation": {
+                "panel": "dedicated",
+                "group": "dev"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Frontend",
+            "type": "shell",
+            "command": "pnpm run dev",
+            "options": {
+                "cwd": "${workspaceFolder}/frontend"
+            },
+            "presentation": {
+                "panel": "dedicated",
+                "group": "dev"
+            },
+            "problemMatcher": []
+        }
+    ]
+}

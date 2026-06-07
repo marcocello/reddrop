@@ -13,8 +13,8 @@ def test_cli_add_accepts_max_runtime_minutes() -> None:
         'add',
         '--name',
         'growth',
-        '--topic',
-        'AI launch strategy',
+        '--search-query-id',
+        'path-123',
         '--max-runtime-minutes',
         '30',
     ])

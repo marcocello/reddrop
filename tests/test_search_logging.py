@@ -3,8 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from backend.cli.commands import search as search_command
+from backend.models import Conversation, SearchArtifact
 from backend.services import reddit_service as reddit_service_module
+from backend.services.search_storage import SearchStorage
 
 
 class _FakeLogger:
@@ -70,6 +74,21 @@ class _FakeRedditService:
         ]
 
 
+class _FakeLinkedinService:
+    last_kwargs: dict | None = None
+
+    def discover_relevant_threads(self, *args, **kwargs):
+        _ = args
+        self.__class__.last_kwargs = dict(kwargs)
+        return []
+
+
+class _FailingRedditService:
+    def discover_relevant_threads(self, *args, **kwargs):
+        _ = (args, kwargs)
+        raise RuntimeError("discovery failed")
+
+
 def test_search_job_logs_starting_with_name_and_id() -> None:
     fake_logger = _FakeLogger()
     deps = search_command.SearchDependencies(
@@ -87,6 +106,13 @@ def test_search_job_logs_starting_with_name_and_id() -> None:
         time_filter="week",
         subreddit_limit=5,
         threads_limit=10,
+        search_plan=SimpleNamespace(
+            model_dump=lambda mode="python": {
+                "topics": ["Example pipeline workflow"],
+                "subreddits": ["startups"],
+                "queries": ["Example pipeline workflow"],
+            }
+        ),
     )
     storage = _FakeStorage()
 
@@ -96,6 +122,140 @@ def test_search_job_logs_starting_with_name_and_id() -> None:
     assert fake_logger.messages[0] == "starting: example - job-123"
     assert _FakeRedditService.last_kwargs is not None
     assert _FakeRedditService.last_kwargs["job_id"] == "job-123"
+
+
+def test_search_job_logs_linkedin_query_and_search_path_context() -> None:
+    fake_logger = _FakeLogger()
+    deps = search_command.SearchDependencies(
+        logger=fake_logger,
+        search_storage_factory=_FakeStorage,
+        reddit_service_cls=_FakeRedditService,
+        linkedin_service_cls=_FakeLinkedinService,
+        conversation_model=lambda **kwargs: kwargs,
+        search_artifact_model=_FakeArtifact,
+        now_fn=lambda: datetime.now(timezone.utc),
+    )
+    job = SimpleNamespace(
+        id="job-ln-1",
+        name="example-linkedin",
+        social="linkedin",
+        topic="very long topic that should not be the only runtime signal",
+        time_filter="week",
+        subreddit_limit=5,
+        threads_limit=10,
+        scroll_rounds=15,
+        sort_by="recency",
+        search_query_id="path-ln-1",
+        search_query_version=2,
+        search_plan=SimpleNamespace(model_dump=lambda mode="python": {"query": "pluto AND pizza"}),
+    )
+    storage = _FakeStorage()
+
+    _ = search_command._search_job(job, storage, deps)
+
+    log_line = next((message for message in fake_logger.messages if "searching linkedin conversations" in message), "")
+    assert "search_query=path-ln-1@v2" in log_line
+    assert "query='pluto AND pizza'" in log_line
+    assert "sort_by=recency" in log_line
+
+
+def test_search_job_logs_reddit_plan_topics_subreddits_and_queries() -> None:
+    fake_logger = _FakeLogger()
+    deps = search_command.SearchDependencies(
+        logger=fake_logger,
+        search_storage_factory=_FakeStorage,
+        reddit_service_cls=_FakeRedditService,
+        conversation_model=lambda **kwargs: kwargs,
+        search_artifact_model=_FakeArtifact,
+        now_fn=lambda: datetime.now(timezone.utc),
+    )
+    job = SimpleNamespace(
+        id="job-rd-1",
+        name="example-reddit",
+        social="reddit",
+        topic="crm sales",
+        time_filter="week",
+        subreddit_limit=5,
+        threads_limit=10,
+        search_query_id="path-rd-1",
+        search_query_version=4,
+        search_plan=SimpleNamespace(
+            model_dump=lambda mode="python": {
+                "topics": ["crm", "sales execution"],
+                "subreddits": ["sales", "smallbusiness"],
+                "queries": ["crm sales", "sales process"],
+            }
+        ),
+    )
+    storage = _FakeStorage()
+
+    _ = search_command._search_job(job, storage, deps)
+
+    log_line = next((message for message in fake_logger.messages if "searching reddit conversations" in message), "")
+    assert "search_query=path-rd-1@v4" in log_line
+    assert "topics=['crm', 'sales execution']" in log_line
+    assert "subreddits=['sales', 'smallbusiness']" in log_line
+    assert "queries=['crm sales', 'sales process']" in log_line
+
+
+def test_search_rerun_failure_keeps_existing_conversations(tmp_path) -> None:
+    storage = SearchStorage(tmp_path / "runs")
+    now = datetime.now(timezone.utc)
+    storage.save_search(
+        SearchArtifact(
+            id="job-123",
+            name="example",
+            topic="crm sales",
+            created_at=now,
+            updated_at=now,
+            conversations=[
+                Conversation(
+                    thread_id="t1",
+                    title="Existing thread",
+                    subreddit="sales",
+                    url="https://reddit.com/r/sales/comments/t1",
+                    score=12,
+                    num_comments=4,
+                    semantic_similarity=0.7,
+                    user_has_commented=False,
+                    reply="existing draft",
+                )
+            ],
+        )
+    )
+
+    deps = search_command.SearchDependencies(
+        logger=_FakeLogger(),
+        search_storage_factory=lambda: storage,
+        reddit_service_cls=_FailingRedditService,
+        conversation_model=Conversation,
+        search_artifact_model=SearchArtifact,
+        now_fn=lambda: datetime.now(timezone.utc),
+    )
+    job = SimpleNamespace(
+        id="job-123",
+        name="example",
+        topic="crm sales",
+        time_filter="week",
+        subreddit_limit=5,
+        threads_limit=10,
+        search_plan=SimpleNamespace(
+            model_dump=lambda mode="python": {
+                "topics": ["crm sales"],
+                "subreddits": ["sales"],
+                "queries": ["crm sales"],
+            }
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="discovery failed"):
+        search_command._search_job(job, storage, deps)
+
+    persisted = storage.get_search("job-123")
+    assert persisted is not None
+    assert len(persisted.conversations) == 1
+    assert persisted.conversations[0].thread_id == "t1"
+    assert persisted.conversations[0].reply == "existing draft"
 
 
 def test_discover_relevant_threads_logs_steps_with_job_prefix(monkeypatch) -> None:

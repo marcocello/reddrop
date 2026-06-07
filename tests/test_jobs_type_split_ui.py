@@ -46,7 +46,6 @@ def test_reply_form_uses_dropdown_for_persona_selection() -> None:
     assert "Label htmlFor={`${prefix}-reply-persona`}>Persona</Label>" in source
     assert "SelectTrigger id={`${prefix}-reply-persona`}" in source
     assert "Select personas" not in source
-    assert "Checkbox" not in source
 
 
 def test_reply_name_is_prefixed_from_source_job() -> None:

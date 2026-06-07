@@ -128,7 +128,7 @@ def get_app_log_config() -> dict:
             "default": {
                 "class": "logging.StreamHandler",
                 "formatter": "default",
-                "stream": "ext://sys.stdout",
+                "stream": "ext://sys.stderr",
                 "filters": ["context"],
             }
         },

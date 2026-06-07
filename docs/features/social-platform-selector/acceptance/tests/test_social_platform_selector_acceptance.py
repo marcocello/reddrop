@@ -33,8 +33,10 @@ def test_jobs_ui_and_auths_ui_expose_linkedin_controls() -> None:
     assert 'linkedin-wait-seconds' not in auths_source
     assert 'reddit-username' in auths_source
     assert 'reddit-password' in auths_source
-    assert 'reddit-client-id' not in auths_source
-    assert 'reddit-client-secret' not in auths_source
+    assert 'reddit-client-id' in auths_source
+    assert 'reddit-client-secret' in auths_source
+    assert 'reddit-user-agent' in auths_source
+    assert 'Client ID, client secret, username, and password are required for Reddit validation.' in auths_source
     assert "accessorKey: 'id'" in auths_source
     assert "Label htmlFor={`${prefix}-name`}>Name</Label>" not in auths_source
     assert "title='Username'" in auths_source
@@ -50,21 +52,36 @@ def test_runtime_logging_bridge_is_present() -> None:
     assert 'class _JobBoundLogger:' in api_source
 
 
+def test_auth_catalog_refresh_is_non_validating_and_still_resolves_linkedin_username() -> None:
+    api_source = Path('backend/api/main.py').read_text(encoding='utf-8')
+    assert 'def _resolve_linkedin_username_from_profile(auth: AuthProfile) -> str:' in api_source
+    assert 'def _auth_catalog_entry(item: AuthProfile) -> dict[str, Any]:' in api_source
+    assert 'auths = [_auth_catalog_entry(item) for item in store.list_auths()]' in api_source
+    assert 'Auth validation start:' not in api_source
+    assert 'Auth validation result:' not in api_source
+
+
 def test_sidebar_navigation_groups_personas_under_workflows() -> None:
     source = Path('frontend/src/components/layout/data/sidebar-data.ts').read_text(encoding='utf-8')
     workflows_start = source.find("title: 'Workflows'")
+    results_start = source.find("title: 'Results'")
     configuration_start = source.find("title: 'Configuration'")
 
     assert workflows_start != -1
+    assert results_start != -1
     assert configuration_start != -1
-    assert workflows_start < configuration_start
+    assert workflows_start < results_start < configuration_start
 
-    workflows_section = source[workflows_start:configuration_start]
+    workflows_section = source[workflows_start:results_start]
+    results_section = source[results_start:configuration_start]
     configuration_section = source[configuration_start:]
 
-    assert "title: 'Jobs'" in workflows_section
-    assert "title: 'Threads'" in workflows_section
     assert "title: 'Personas'" in workflows_section
+    assert "title: 'Search Queries'" in workflows_section
+    assert "title: 'Jobs'" in workflows_section
+    assert "title: 'Conversations'" not in workflows_section
+    assert "title: 'Conversations'" in results_section
+    assert "title: 'Jobs'" not in results_section
     assert "title: 'Auths'" in configuration_section
     assert "title: 'Settings'" in configuration_section
     assert "title: 'Personas'" not in configuration_section

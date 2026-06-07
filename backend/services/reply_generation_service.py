@@ -11,6 +11,14 @@ logger = setup_logging(__name__)
 
 
 class ReplyGenerationService:
+    DEFAULT_SYSTEM_PROMPT = (
+        "You write reddit-native replies. "
+        "Output only the final reply text with no markdown fences. "
+        "Style rules: not verbose at all, use jargon when natural, no explanation, no mansplaining. "
+        "Be short, practical and genuine. "
+        "Do not use the em dash character."
+    )
+
     @staticmethod
     def _default_tone_profile() -> dict[str, str]:
         return {
@@ -57,23 +65,14 @@ Thread body:
         persona: Optional[PersonaProfile] = None,
     ) -> str:
         tone_profile = self._extract_tone_profile(conversation)
-        system_message = (
-            "You write reddit-native replies. "
-            "Output only the final reply text with no markdown fences. "
-            "Style rules: not verbose at all, use jargon when natural, no explanation, no mansplaining. "
-            "Be short, practical and genuine."
-            "Do not use the em dash character."
-        )
+        system_message = self.DEFAULT_SYSTEM_PROMPT
         persona_section = ""
         if persona is not None:
             persona_section = f"""
 Persona name:
 {persona.name}
 
-Persona description:
-{persona.description}
-
-Persona objective:
+Persona objective, tone & style:
 {persona.objective}
 """
         human_message = f"""

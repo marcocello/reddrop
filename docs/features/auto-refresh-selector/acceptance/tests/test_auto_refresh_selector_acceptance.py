@@ -31,19 +31,33 @@ def test_auto_refresh_label_removed_and_refresh_button_kept() -> None:
     assert "aria-label='Auto-refresh threads'" in threads
 
 
-def test_jobs_and_threads_headers_share_button_pattern() -> None:
+def test_jobs_header_has_create_and_threads_has_refresh_only() -> None:
     jobs = Path('frontend/src/features/jobs/index.tsx').read_text(encoding='utf-8')
     threads = Path('frontend/src/features/threads/index.tsx').read_text(encoding='utf-8')
 
     assert 'Create job' in jobs
-    assert 'Create job' in threads
-    assert jobs.index('Create job') < jobs.index("aria-label='Manual refresh jobs'")
-    assert threads.index('Create job') < threads.index("aria-label='Manual refresh threads'")
+    assert 'Create job' not in threads
+    assert jobs.index("aria-label='Manual refresh jobs'") < jobs.index('Create job')
+    assert "<Plus className='size-4' />" in jobs
+    assert "<Plus className='size-4' />" not in threads
 
 
-def test_personas_has_no_manual_refresh_button() -> None:
+def test_personas_auths_and_search_paths_use_refresh_then_create() -> None:
     personas = Path('frontend/src/features/personas/index.tsx').read_text(encoding='utf-8')
+    auths = Path('frontend/src/features/auths/index.tsx').read_text(encoding='utf-8')
+    search_queries = Path('frontend/src/features/search-queries/index.tsx').read_text(encoding='utf-8')
 
     assert 'Create persona' in personas
-    assert "onClick={() => void loadPersonas()}" not in personas
-    assert "aria-label='Refresh personas'" not in personas
+    assert "onClick={() => void loadPersonas()}" in personas
+    assert personas.index('RefreshCw') < personas.index('Create persona')
+    assert "<Plus className='size-4' />" in personas
+
+    assert 'Create auth' in auths
+    assert "onClick={() => void loadAuths()}" in auths
+    assert auths.index('RefreshCw') < auths.index('Create auth')
+    assert "<Plus className='size-4' />" in auths
+
+    assert 'Create search query' in search_queries
+    assert "onClick={() => void load()}" in search_queries
+    assert search_queries.index('RefreshCw') < search_queries.index('Create search query')
+    assert "<Plus className='size-4' />" in search_queries

@@ -15,12 +15,16 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
 class JobConfigStore:
-    def __init__(self, config_path: str | Path = _BACKEND_ROOT / ".reddrop/jobs_config.json") -> None:
+    def __init__(
+        self, config_path: str | Path = _BACKEND_ROOT / ".reddrop/jobs_config.json"
+    ) -> None:
         self.config_path = Path(config_path)
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         legacy_path = self.config_path.parent / "jobs" / "jobs_config.json"
         if not self.config_path.exists() and legacy_path.exists():
-            self.config_path.write_text(legacy_path.read_text(encoding="utf-8"), encoding="utf-8")
+            self.config_path.write_text(
+                legacy_path.read_text(encoding="utf-8"), encoding="utf-8"
+            )
             try:
                 legacy_path.unlink()
                 legacy_dir = legacy_path.parent
@@ -33,7 +37,10 @@ class JobConfigStore:
 
     def list_jobs(self) -> list[PeriodicSearchJob]:
         with self._lock:
-            return [PeriodicSearchJob.model_validate(item.model_dump(mode="python")) for item in self._config.jobs]
+            return [
+                PeriodicSearchJob.model_validate(item.model_dump(mode="python"))
+                for item in self._config.jobs
+            ]
 
     def get_job_by_id(self, job_id: str) -> PeriodicSearchJob | None:
         normalized_id = job_id.strip()
@@ -42,7 +49,9 @@ class JobConfigStore:
         with self._lock:
             for job in self._config.jobs:
                 if job.id == normalized_id:
-                    return PeriodicSearchJob.model_validate(job.model_dump(mode="python"))
+                    return PeriodicSearchJob.model_validate(
+                        job.model_dump(mode="python")
+                    )
         return None
 
     def get_job_by_name(self, name: str) -> PeriodicSearchJob | None:
@@ -52,7 +61,9 @@ class JobConfigStore:
         with self._lock:
             for job in self._config.jobs:
                 if job.name == normalized_name:
-                    return PeriodicSearchJob.model_validate(job.model_dump(mode="python"))
+                    return PeriodicSearchJob.model_validate(
+                        job.model_dump(mode="python")
+                    )
         return None
 
     def upsert_job(
@@ -70,6 +81,15 @@ class JobConfigStore:
         time_filter: str | None = None,
         subreddit_limit: int | None = None,
         threads_limit: int | None = None,
+        scroll_rounds: int | None = None,
+        sort_by: str | None = None,
+        selector_wait_timeout_seconds: int | None = None,
+        detail_wait_timeout_seconds: int | None = None,
+        max_comment_expand_clicks: int | None = None,
+        detail_enrich_top_k: int | None = None,
+        search_plan: dict | None = None,
+        search_query_id: str | None = None,
+        search_query_version: int | None = None,
         replies_per_iteration: int | None = 3,
         max_runtime_minutes: int = 1440,
         personas: list[str] | None = None,
@@ -89,20 +109,43 @@ class JobConfigStore:
                     break
 
             payload = PeriodicSearchJob(
-                id=self._config.jobs[existing].id if existing is not None else normalized_id,
+                id=self._config.jobs[existing].id
+                if existing is not None
+                else normalized_id,
                 name=normalized_name,
                 job_type=self._normalize_job_type(job_type),
                 social=self._normalize_social(social),
                 auth_id=self._normalize_source_job_id(auth_id),
                 source_job_id=self._normalize_source_job_id(source_job_id),
-                topic=self._normalize_topic_for_job_type(job_type=job_type, topic=topic),
-                min_similarity_score=self._normalize_similarity_score(min_similarity_score, fallback=0.35),
+                topic=self._normalize_topic_for_job_type(
+                    job_type=job_type, topic=topic
+                ),
+                min_similarity_score=self._normalize_similarity_score(
+                    min_similarity_score, fallback=0.35
+                ),
                 active=bool(active),
                 time_filter=time_filter,
                 subreddit_limit=subreddit_limit,
                 threads_limit=threads_limit,
-                replies_per_iteration=self._positive_int(replies_per_iteration, fallback=3),
-                max_runtime_minutes=self._positive_int(max_runtime_minutes, fallback=1440),
+                scroll_rounds=scroll_rounds,
+                sort_by=sort_by,
+                selector_wait_timeout_seconds=selector_wait_timeout_seconds,
+                detail_wait_timeout_seconds=detail_wait_timeout_seconds,
+                max_comment_expand_clicks=max_comment_expand_clicks,
+                detail_enrich_top_k=detail_enrich_top_k,
+                search_plan=search_plan,
+                search_query_id=self._normalize_source_job_id(search_query_id),
+                search_query_version=self._positive_int(
+                    search_query_version, fallback=1
+                )
+                if search_query_version is not None
+                else None,
+                replies_per_iteration=self._positive_int(
+                    replies_per_iteration, fallback=3
+                ),
+                max_runtime_minutes=self._positive_int(
+                    max_runtime_minutes, fallback=1440
+                ),
                 personas=self._normalize_persona_names(personas),
             )
 
@@ -128,6 +171,15 @@ class JobConfigStore:
         time_filter: str | None = None,
         subreddit_limit: int | None = None,
         threads_limit: int | None = None,
+        scroll_rounds: int | None = None,
+        sort_by: str | None = None,
+        selector_wait_timeout_seconds: int | None = None,
+        detail_wait_timeout_seconds: int | None = None,
+        max_comment_expand_clicks: int | None = None,
+        detail_enrich_top_k: int | None = None,
+        search_plan: dict | None = None,
+        search_query_id: str | None = None,
+        search_query_version: int | None = None,
         replies_per_iteration: int | None = 3,
         max_runtime_minutes: int = 1440,
         personas: list[str] | None = None,
@@ -149,7 +201,10 @@ class JobConfigStore:
                 raise ValueError(f"Job not found: {normalized_id}")
 
             for index, job in enumerate(self._config.jobs):
-                if index != target_index and job.name.lower() == normalized_name.lower():
+                if (
+                    index != target_index
+                    and job.name.lower() == normalized_name.lower()
+                ):
                     raise ValueError(f"Job name already exists: {normalized_name}")
 
             payload = PeriodicSearchJob(
@@ -159,14 +214,35 @@ class JobConfigStore:
                 social=self._normalize_social(social),
                 auth_id=self._normalize_source_job_id(auth_id),
                 source_job_id=self._normalize_source_job_id(source_job_id),
-                topic=self._normalize_topic_for_job_type(job_type=job_type, topic=topic),
-                min_similarity_score=self._normalize_similarity_score(min_similarity_score, fallback=0.35),
+                topic=self._normalize_topic_for_job_type(
+                    job_type=job_type, topic=topic
+                ),
+                min_similarity_score=self._normalize_similarity_score(
+                    min_similarity_score, fallback=0.35
+                ),
                 active=bool(active),
                 time_filter=time_filter,
                 subreddit_limit=subreddit_limit,
                 threads_limit=threads_limit,
-                replies_per_iteration=self._positive_int(replies_per_iteration, fallback=3),
-                max_runtime_minutes=self._positive_int(max_runtime_minutes, fallback=1440),
+                scroll_rounds=scroll_rounds,
+                sort_by=sort_by,
+                selector_wait_timeout_seconds=selector_wait_timeout_seconds,
+                detail_wait_timeout_seconds=detail_wait_timeout_seconds,
+                max_comment_expand_clicks=max_comment_expand_clicks,
+                detail_enrich_top_k=detail_enrich_top_k,
+                search_plan=search_plan,
+                search_query_id=self._normalize_source_job_id(search_query_id),
+                search_query_version=self._positive_int(
+                    search_query_version, fallback=1
+                )
+                if search_query_version is not None
+                else None,
+                replies_per_iteration=self._positive_int(
+                    replies_per_iteration, fallback=3
+                ),
+                max_runtime_minutes=self._positive_int(
+                    max_runtime_minutes, fallback=1440
+                ),
                 personas=self._normalize_persona_names(personas),
             )
             self._config.jobs[target_index] = payload
@@ -179,7 +255,9 @@ class JobConfigStore:
             return False
         with self._lock:
             original_len = len(self._config.jobs)
-            self._config.jobs = [job for job in self._config.jobs if job.id != normalized_id]
+            self._config.jobs = [
+                job for job in self._config.jobs if job.id != normalized_id
+            ]
             deleted = len(self._config.jobs) != original_len
             if deleted:
                 self._persist()
@@ -206,13 +284,28 @@ class JobConfigStore:
                     time_filter=job.time_filter,
                     subreddit_limit=job.subreddit_limit,
                     threads_limit=job.threads_limit,
+                    scroll_rounds=job.scroll_rounds,
+                    sort_by=job.sort_by,
+                    selector_wait_timeout_seconds=job.selector_wait_timeout_seconds,
+                    detail_wait_timeout_seconds=job.detail_wait_timeout_seconds,
+                    max_comment_expand_clicks=job.max_comment_expand_clicks,
+                    detail_enrich_top_k=job.detail_enrich_top_k,
+                    search_plan=(
+                        None
+                        if job.search_plan is None
+                        else job.search_plan.model_dump(mode="python")
+                    ),
+                    search_query_id=job.search_query_id,
+                    search_query_version=job.search_query_version,
                     replies_per_iteration=job.replies_per_iteration,
                     max_runtime_minutes=job.max_runtime_minutes,
                     personas=(list(job.personas) if job.personas is not None else None),
                 )
                 self._config.jobs[index] = updated
                 self._persist()
-                return PeriodicSearchJob.model_validate(updated.model_dump(mode="python"))
+                return PeriodicSearchJob.model_validate(
+                    updated.model_dump(mode="python")
+                )
         return None
 
     def _load(self) -> JobsConfig:
@@ -251,12 +344,22 @@ class JobConfigStore:
                     record["name"] = f"job-{source_id[:8]}"
                 else:
                     record["name"] = f"job-{index}"
-            if not record.get("time_filter"):
-                record["time_filter"] = "week"
-            record["job_type"] = JobConfigStore._normalize_job_type(record.get("job_type"))
+            record["job_type"] = JobConfigStore._normalize_job_type(
+                record.get("job_type")
+            )
             record["social"] = JobConfigStore._normalize_social(record.get("social"))
-            record["auth_id"] = JobConfigStore._normalize_source_job_id(record.get("auth_id"))
-            record["source_job_id"] = JobConfigStore._normalize_source_job_id(record.get("source_job_id"))
+            if (
+                record.get("job_type") == "search"
+                and record.get("social") == "reddit"
+                and not record.get("time_filter")
+            ):
+                record["time_filter"] = "week"
+            record["auth_id"] = JobConfigStore._normalize_source_job_id(
+                record.get("auth_id")
+            )
+            record["source_job_id"] = JobConfigStore._normalize_source_job_id(
+                record.get("source_job_id")
+            )
             record["topic"] = JobConfigStore._normalize_topic_for_job_type(
                 job_type=record.get("job_type"),
                 topic=record.get("topic"),
@@ -267,23 +370,57 @@ class JobConfigStore:
             )
             if "active" not in record:
                 record["active"] = False
-            if "subreddit_limit" not in record:
+            if (
+                record.get("job_type") == "search"
+                and record.get("social") == "reddit"
+                and "subreddit_limit" not in record
+            ):
                 record["subreddit_limit"] = 5
             if "threads_limit" not in record:
                 record["threads_limit"] = 10
+            if "scroll_rounds" not in record and record.get("social") == "linkedin":
+                record["scroll_rounds"] = 15
+            if (
+                "sort_by" not in record
+                and record.get("job_type") == "search"
+                and record.get("social") == "linkedin"
+            ):
+                record["sort_by"] = "relevance"
+            if "search_query_id" not in record and "search_path_id" in record:
+                record["search_query_id"] = record.get("search_path_id")
+            if "search_query_version" not in record and "search_path_version" in record:
+                record["search_query_version"] = record.get("search_path_version")
+            record.pop("search_path_id", None)
+            record.pop("search_path_version", None)
+            record["search_query_id"] = JobConfigStore._normalize_source_job_id(
+                record.get("search_query_id")
+            )
+            search_query_version = record.get("search_query_version")
+            record["search_query_version"] = (
+                JobConfigStore._positive_int(search_query_version, fallback=1)
+                if search_query_version is not None
+                else None
+            )
             record["replies_per_iteration"] = JobConfigStore._positive_int(
                 record.get("replies_per_iteration"),
                 fallback=3,
             )
             fallback_minutes = 1440
             if "max_runtime_hours" in record:
-                fallback_minutes = JobConfigStore._positive_int(record.get("max_runtime_hours"), fallback=24) * 60
+                fallback_minutes = (
+                    JobConfigStore._positive_int(
+                        record.get("max_runtime_hours"), fallback=24
+                    )
+                    * 60
+                )
             record["max_runtime_minutes"] = JobConfigStore._positive_int(
                 record.get("max_runtime_minutes"),
                 fallback=fallback_minutes,
             )
             record.pop("max_runtime_hours", None)
-            record["personas"] = JobConfigStore._normalize_persona_names(record.get("personas"))
+            record["personas"] = JobConfigStore._normalize_persona_names(
+                record.get("personas")
+            )
             normalized_jobs.append(record)
 
         return {"jobs": normalized_jobs}
@@ -324,7 +461,7 @@ class JobConfigStore:
     @staticmethod
     def _positive_int(value: object, *, fallback: int) -> int:
         try:
-            numeric = int(value)  # type: ignore[arg-type]
+            numeric = int(str(value))
         except Exception:
             return fallback
         if numeric <= 0:

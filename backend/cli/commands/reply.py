@@ -65,14 +65,14 @@ def handle(args, emit, error, deps: ReplyDependencies) -> int:
     if deps.should_stop():
         return error("Run stopped by user request.")
 
-    search_path = _resolve_search_file(args.search_file, deps.runs_dir)
-    if search_path is None:
+    search_query = _resolve_search_file(args.search_file, deps.runs_dir)
+    if search_query is None:
         return error(f"Search file not found: {args.search_file}")
 
     storage = deps.search_storage_cls(deps.runs_dir)
-    search_artifact = storage.get_search_by_path(search_path)
+    search_artifact = storage.get_search_by_path(search_query)
     if search_artifact is None:
-        return error(f"Invalid search artifact: {search_path.name}")
+        return error(f"Invalid search artifact: {search_query.name}")
 
     replied_keys = {
         (item.thread_id, item.subreddit)
@@ -104,7 +104,7 @@ def handle(args, emit, error, deps: ReplyDependencies) -> int:
 
     deps.logger.info(
         "Generating replies for search file %s (selected=%s/%s eligible, already_replied=%s, min_similarity=%.2f, total=%s).",
-        search_path.name,
+        search_query.name,
         len(selected),
         len(eligible),
         len(replied_keys),
@@ -145,13 +145,13 @@ def handle(args, emit, error, deps: ReplyDependencies) -> int:
         updated_at=deps.now_fn(),
         conversations=updated_conversations,
     )
-    storage.save_search_at_path(search_path, updated_artifact)
+    storage.save_search_at_path(search_query, updated_artifact)
 
     total_with_replies = sum(1 for item in updated_conversations if item.reply.strip())
     emit(
         {
-            "search_file": search_path.name,
-            "reply_file": search_path.name,
+            "search_file": search_query.name,
+            "reply_file": search_query.name,
             "generated": len(generated_map),
             "total_with_replies": total_with_replies,
             "min_similarity": min_similarity,

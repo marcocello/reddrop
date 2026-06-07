@@ -10,17 +10,20 @@ import {
   getFilteredRowModel,
   getPaginationRowModel,
   getSortedRowModel,
+  type RowSelectionState,
   type SortingState,
   useReactTable,
   type VisibilityState,
 } from '@tanstack/react-table'
-import { CheckCircle2, CircleX, Copy, MoreHorizontal, Pencil, Play, Trash2 } from 'lucide-react'
+import { CheckCircle2, CircleX, Copy, MoreHorizontal, Pencil, Play, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { DataTableColumnHeader, DataTablePagination, DataTableToolbar } from '@/components/data-table'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
+import { SelectionActionBar } from '@/components/selection-action-bar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -55,9 +58,10 @@ import {
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
-import { reddropApi, type AuthProfile, type SocialPlatform } from '@/lib/reddrop-api'
+import { reddropApi, type AuthProfile, type Job, type SocialPlatform } from '@/lib/reddrop-api'
 
 const ACTIONS_COLUMN_ID = 'actions'
+const SELECT_COLUMN_ID = 'select'
 
 function buildDefaultAuth(): AuthProfile {
   return {
@@ -70,6 +74,7 @@ function buildDefaultAuth(): AuthProfile {
     reddit_user_agent: 'Reddrop:v1.0',
     reddit_username: '',
     reddit_password: '',
+    linkedin_username: '',
     linkedin_email: '',
     linkedin_password: '',
     linkedin_headless: 'true',
@@ -125,6 +130,7 @@ function normalizeAuth(payload: AuthProfile): AuthProfile {
     reddit_user_agent: payload.reddit_user_agent.trim() || 'Reddrop:v1.0',
     reddit_username: redditUsername,
     reddit_password: payload.reddit_password.trim(),
+    linkedin_username: payload.linkedin_username.trim(),
     linkedin_email: payload.linkedin_email.trim(),
     linkedin_password: payload.linkedin_password.trim(),
     linkedin_headless: 'true',
@@ -151,6 +157,9 @@ function authUsername(item: AuthProfile): string {
   if (item.social === 'reddit') {
     return item.reddit_username.trim() || '-'
   }
+  if (item.social === 'linkedin') {
+    return item.linkedin_username.trim() || '-'
+  }
   return '-'
 }
 
@@ -167,46 +176,43 @@ function statusBadgeClass(status: string | undefined): string {
 
 export function AuthsPage() {
   const [auths, setAuths] = useState<AuthProfile[]>([])
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [sorting, setSorting] = useState<SortingState>([{ id: 'id', desc: false }])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
 
   const [sheetOpen, setSheetOpen] = useState(false)
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
-  const [pendingDeleteAuth, setPendingDeleteAuth] = useState<AuthProfile | null>(null)
+  const [pendingDeleteAuth, setPendingDeleteAuth] = useState<{ auth: AuthProfile; relatedJobs: Job[] } | null>(null)
+  const [pendingDeleteAuths, setPendingDeleteAuths] = useState<{ auths: AuthProfile[]; relatedJobs: Job[] } | null>(null)
   const [selectedAuth, setSelectedAuth] = useState<AuthProfile | null>(null)
   const [form, setForm] = useState<AuthProfile>(buildDefaultAuth)
 
-  const applyValidatedStatuses = useCallback(async (items: AuthProfile[]): Promise<AuthProfile[]> => {
-    try {
-      const payload = await reddropApi.validateAuths()
-      const statusById = new Map(payload.results.map((entry) => [entry.auth_id, entry.status]))
-      return items.map((item) => ({
-        ...item,
-        status: statusById.get(item.id) ?? item.status ?? 'invalid',
-      }))
-    } catch {
-      return items
-    }
-  }, [])
-
   const loadAuths = useCallback(async (): Promise<void> => {
+    setLoading(true)
     try {
-      const payload = await reddropApi.listAuths()
-      const validated = await applyValidatedStatuses(payload.auths)
-      setAuths(validated)
+      const [authsPayload, jobsPayload] = await Promise.all([
+        reddropApi.listAuths(),
+        reddropApi.listJobs(),
+      ])
+      setAuths(authsPayload.auths)
+      setJobs(jobsPayload.jobs)
       setSelectedAuth((prev) => {
         if (!prev) return null
-        return validated.find((item) => item.id === prev.id) ?? null
+        return authsPayload.auths.find((item) => item.id === prev.id) ?? null
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load auths'
       toast.error(message)
+    } finally {
+      setLoading(false)
     }
-  }, [applyValidatedStatuses])
+  }, [])
 
   useEffect(() => {
     void loadAuths()
@@ -216,8 +222,7 @@ export function AuthsPage() {
     setSaving(true)
     try {
       const payload = await reddropApi.saveAuths({ auths: next })
-      const validated = await applyValidatedStatuses(payload.auths)
-      setAuths(validated)
+      setAuths(payload.auths)
       toast.success(successMessage)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to save auths'
@@ -226,7 +231,7 @@ export function AuthsPage() {
       setSaving(false)
       setBusyKey(null)
     }
-  }, [applyValidatedStatuses])
+  }, [])
 
   const openCreateDialog = useCallback((): void => {
     setSelectedAuth(null)
@@ -243,6 +248,14 @@ export function AuthsPage() {
 
   const saveFromSheet = useCallback(async (): Promise<void> => {
     const normalized = normalizeAuth(form)
+    if (normalized.social === 'reddit' && !normalized.reddit_client_id.trim()) {
+      toast.error('Client ID is required for Reddit auth.')
+      return
+    }
+    if (normalized.social === 'reddit' && !normalized.reddit_client_secret.trim()) {
+      toast.error('Client secret is required for Reddit auth.')
+      return
+    }
     if (normalized.social === 'reddit' && !normalized.reddit_username.trim()) {
       toast.error('Username is required for Reddit auth.')
       return
@@ -279,8 +292,7 @@ export function AuthsPage() {
       let persisted = false
       try {
         const payload = await reddropApi.saveAuths({ auths: next })
-        const validated = await applyValidatedStatuses(payload.auths)
-        setAuths(validated)
+        setAuths(payload.auths)
         persisted = true
         await reddropApi.runLinkedinAuthLogin(normalized.id)
         await loadAuths()
@@ -291,8 +303,7 @@ export function AuthsPage() {
         if (persisted) {
           try {
             const rollback = await reddropApi.saveAuths({ auths })
-            const rollbackValidated = await applyValidatedStatuses(rollback.auths)
-            setAuths(rollbackValidated)
+            setAuths(rollback.auths)
             toast.error('LinkedIn login failed. Auth was not created.')
           } catch (rollbackError) {
             const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : 'Failed to rollback auth creation'
@@ -321,18 +332,95 @@ export function AuthsPage() {
     setSelectedAuth(selectedAuth === null ? null : normalized)
     setSheetOpen(false)
     setCreateDialogOpen(false)
-  }, [applyValidatedStatuses, auths, form, loadAuths, persistAuths, selectedAuth])
+  }, [auths, form, loadAuths, persistAuths, selectedAuth])
 
-  const deleteAuth = useCallback(async (auth: AuthProfile): Promise<void> => {
+  const relatedJobsForAuth = useCallback((authId: string): Job[] => {
+    const normalized = authId.trim()
+    if (!normalized) return []
+    const relatedById = new Map<string, Job>()
+    const direct = jobs.filter((item) => (item.auth_id ?? '').trim() === normalized)
+    const seedIds = new Set(direct.map((item) => item.id))
+    for (const item of direct) {
+      relatedById.set(item.id, item)
+    }
+    for (const item of jobs) {
+      if (item.job_type !== 'reply') continue
+      if (!item.source_job_id) continue
+      if (seedIds.has(item.source_job_id)) {
+        relatedById.set(item.id, item)
+      }
+    }
+    return Array.from(relatedById.values())
+  }, [jobs])
+
+  const deleteAuth = useCallback(async (auth: AuthProfile, cascade: boolean): Promise<void> => {
     const key = `${auth.id}:delete`
     setBusyKey(key)
-    const next = auths.filter((item) => item.id !== auth.id)
-    await persistAuths(next, `Deleted auth ${authLabel(auth)}`)
-    if (selectedAuth?.id === auth.id) {
-      setSelectedAuth(null)
-      setSheetOpen(false)
+    try {
+      if (cascade) await reddropApi.deleteAuthCascade(auth.id)
+      else await reddropApi.deleteAuth(auth.id)
+      toast.success(`Deleted auth ${authLabel(auth)}`)
+      await loadAuths()
+      if (selectedAuth?.id === auth.id) {
+        setSelectedAuth(null)
+        setSheetOpen(false)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `Failed to delete ${authLabel(auth)}`
+      toast.error(message)
+    } finally {
+      setBusyKey(null)
     }
-  }, [auths, persistAuths, selectedAuth?.id])
+  }, [loadAuths, selectedAuth?.id])
+
+  const requestDeleteSelectedAuths = useCallback((): void => {
+    const selectedIds = new Set(
+      Object.entries(rowSelection)
+        .filter(([, selected]) => Boolean(selected))
+        .map(([id]) => id)
+    )
+    const selected = auths.filter((item) => selectedIds.has(item.id))
+    if (selected.length === 0) return
+    const relatedById = new Map<string, Job>()
+    for (const auth of selected) {
+      for (const related of relatedJobsForAuth(auth.id)) {
+        relatedById.set(related.id, related)
+      }
+    }
+    setPendingDeleteAuths({
+      auths: selected,
+      relatedJobs: Array.from(relatedById.values()),
+    })
+  }, [auths, relatedJobsForAuth, rowSelection])
+
+  const deleteSelectedAuths = useCallback(async (): Promise<void> => {
+    if (!pendingDeleteAuths) return
+    setBusyKey('bulk-delete')
+    let deletedCount = 0
+    let firstError = ''
+    for (const auth of pendingDeleteAuths.auths) {
+      try {
+        const related = relatedJobsForAuth(auth.id)
+        if (related.length > 0) await reddropApi.deleteAuthCascade(auth.id)
+        else await reddropApi.deleteAuth(auth.id)
+        deletedCount += 1
+      } catch (error) {
+        if (!firstError) {
+          firstError = error instanceof Error ? error.message : `Failed to delete ${authLabel(auth)}`
+        }
+      }
+    }
+    setPendingDeleteAuths(null)
+    setRowSelection({})
+    await loadAuths()
+    if (deletedCount > 0) {
+      toast.success(`Deleted ${deletedCount} auth object${deletedCount === 1 ? '' : 's'}`)
+    }
+    if (firstError) {
+      toast.error(firstError)
+    }
+    setBusyKey(null)
+  }, [loadAuths, pendingDeleteAuths, relatedJobsForAuth])
 
   const duplicateAuth = useCallback(async (auth: AuthProfile): Promise<void> => {
     const key = `${auth.id}:duplicate`
@@ -370,17 +458,47 @@ export function AuthsPage() {
   }, [loadAuths])
 
   const requestDeleteAuth = useCallback((auth: AuthProfile): void => {
-    setPendingDeleteAuth(auth)
-  }, [])
+    setPendingDeleteAuth({
+      auth,
+      relatedJobs: relatedJobsForAuth(auth.id),
+    })
+  }, [relatedJobsForAuth])
 
   const confirmDeleteAuth = useCallback(async (): Promise<void> => {
     if (!pendingDeleteAuth) return
-    await deleteAuth(pendingDeleteAuth)
+    await deleteAuth(pendingDeleteAuth.auth, pendingDeleteAuth.relatedJobs.length > 0)
     setPendingDeleteAuth(null)
   }, [deleteAuth, pendingDeleteAuth])
 
+  const confirmDeleteSelectedAuths = useCallback(async (): Promise<void> => {
+    await deleteSelectedAuths()
+  }, [deleteSelectedAuths])
+
   const columns = useMemo<ColumnDef<AuthProfile>[]>(
     () => [
+      {
+        id: SELECT_COLUMN_ID,
+        enableSorting: false,
+        enableHiding: false,
+        header: ({ table }) => (
+          <Checkbox
+            aria-label='Select all auths'
+            checked={
+              table.getIsAllPageRowsSelected() ||
+              (table.getIsSomePageRowsSelected() && 'indeterminate')
+            }
+            onCheckedChange={(value) => table.toggleAllPageRowsSelected(Boolean(value))}
+          />
+        ),
+        cell: ({ row }) => (
+          <Checkbox
+            aria-label={`Select auth ${row.original.id}`}
+            checked={row.getIsSelected()}
+            onCheckedChange={(value) => row.toggleSelected(Boolean(value))}
+            onClick={(event) => event.stopPropagation()}
+          />
+        ),
+      },
       {
         accessorKey: 'id',
         header: ({ column }) => <DataTableColumnHeader column={column} title='ID' />,
@@ -472,7 +590,9 @@ export function AuthsPage() {
       columnFilters,
       globalFilter,
       columnVisibility,
+      rowSelection,
     },
+    enableRowSelection: true,
     enableGlobalFilter: true,
     globalFilterFn: (row, _columnId, filterValue) => {
       const query = String(filterValue ?? '').trim().toLowerCase()
@@ -489,6 +609,8 @@ export function AuthsPage() {
     onColumnFiltersChange: setColumnFilters,
     onGlobalFilterChange: setGlobalFilter,
     onColumnVisibilityChange: setColumnVisibility,
+    onRowSelectionChange: setRowSelection,
+    getRowId: (row) => row.id,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -531,6 +653,31 @@ export function AuthsPage() {
           <p className='text-sm font-medium'>Reddit credentials</p>
           <div className='grid gap-3 md:grid-cols-2'>
             <div className='space-y-2'>
+              <Label htmlFor={`${prefix}-reddit-client-id`}>Client ID</Label>
+              <Input
+                id={`${prefix}-reddit-client-id`}
+                value={form.reddit_client_id}
+                onChange={(event) => setForm((prev) => ({ ...prev, reddit_client_id: event.target.value }))}
+              />
+            </div>
+            <div className='space-y-2'>
+              <Label htmlFor={`${prefix}-reddit-client-secret`}>Client secret</Label>
+              <Input
+                id={`${prefix}-reddit-client-secret`}
+                type='password'
+                value={form.reddit_client_secret}
+                onChange={(event) => setForm((prev) => ({ ...prev, reddit_client_secret: event.target.value }))}
+              />
+            </div>
+            <div className='space-y-2 md:col-span-2'>
+              <Label htmlFor={`${prefix}-reddit-user-agent`}>User agent</Label>
+              <Input
+                id={`${prefix}-reddit-user-agent`}
+                value={form.reddit_user_agent}
+                onChange={(event) => setForm((prev) => ({ ...prev, reddit_user_agent: event.target.value }))}
+              />
+            </div>
+            <div className='space-y-2'>
               <Label htmlFor={`${prefix}-reddit-username`}>Username</Label>
               <Input
                 id={`${prefix}-reddit-username`}
@@ -538,7 +685,7 @@ export function AuthsPage() {
                 onChange={(event) => setForm((prev) => ({ ...prev, reddit_username: event.target.value }))}
               />
             </div>
-            <div className='space-y-2 md:col-span-2'>
+            <div className='space-y-2'>
               <Label htmlFor={`${prefix}-reddit-password`}>Password</Label>
               <Input
                 id={`${prefix}-reddit-password`}
@@ -549,7 +696,7 @@ export function AuthsPage() {
             </div>
             <div className='md:col-span-2'>
               <p className='text-xs text-muted-foreground'>
-                Reddit app credentials can stay in environment variables; this auth only requires username/password.
+                Client ID, client secret, username, and password are required for Reddit validation.
               </p>
             </div>
           </div>
@@ -573,7 +720,12 @@ export function AuthsPage() {
     <>
       <Header fixed>
         <div className='ms-auto flex items-center gap-2'>
+          <Button size='sm' variant='outline' onClick={() => void loadAuths()} disabled={loading || saving}>
+            <RefreshCw className='size-4' />
+            Refresh
+          </Button>
           <Button size='sm' onClick={openCreateDialog}>
+            <Plus className='size-4' />
             Create auth
           </Button>
         </div>
@@ -642,6 +794,15 @@ export function AuthsPage() {
         </div>
       </Main>
 
+      <SelectionActionBar
+        selectedCount={table.getSelectedRowModel().rows.length}
+        entityLabel='auth'
+        onClear={() => setRowSelection({})}
+        onDelete={() => requestDeleteSelectedAuths()}
+        deleteLabel='Delete selected'
+        deleteDisabled={busyKey === 'bulk-delete'}
+      />
+
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent className='sm:max-w-2xl'>
           <ModalDialogHeader>
@@ -709,11 +870,52 @@ export function AuthsPage() {
           if (!open) setPendingDeleteAuth(null)
         }}
         title='Delete auth'
-        desc={pendingDeleteAuth ? `Delete ${authLabel(pendingDeleteAuth)}? This cannot be undone.` : ''}
+        desc={
+          pendingDeleteAuth
+            ? pendingDeleteAuth.relatedJobs.length > 0
+              ? (
+                  <>
+                    <p>Delete {authLabel(pendingDeleteAuth.auth)} and related jobs?</p>
+                    <p className='mt-2 text-xs text-muted-foreground'>
+                      Related jobs: {pendingDeleteAuth.relatedJobs.map((item) => item.name).join(', ')}
+                    </p>
+                  </>
+                )
+              : `Delete ${authLabel(pendingDeleteAuth.auth)}? This cannot be undone.`
+            : ''
+        }
         confirmText='Delete'
         destructive
-        isLoading={pendingDeleteAuth ? busyKey === `${pendingDeleteAuth.id}:delete` : false}
+        isLoading={pendingDeleteAuth ? busyKey === `${pendingDeleteAuth.auth.id}:delete` : false}
         handleConfirm={() => void confirmDeleteAuth()}
+      />
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteAuths)}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteAuths(null)
+        }}
+        title='Delete selected auths'
+        desc={
+          pendingDeleteAuths
+            ? pendingDeleteAuths.relatedJobs.length > 0
+              ? (
+                  <>
+                    <p>
+                      This will delete {pendingDeleteAuths.auths.length} selected auth objects and related jobs.
+                    </p>
+                    <p className='mt-2 text-xs text-muted-foreground'>
+                      Related jobs: {pendingDeleteAuths.relatedJobs.map((item) => item.name).join(', ')}
+                    </p>
+                  </>
+                )
+              : `This action will permanently delete ${pendingDeleteAuths.auths.length} selected auth object${pendingDeleteAuths.auths.length === 1 ? '' : 's'}.`
+            : ''
+        }
+        confirmText='Delete'
+        destructive
+        isLoading={busyKey === 'bulk-delete'}
+        handleConfirm={() => void confirmDeleteSelectedAuths()}
       />
     </>
   )

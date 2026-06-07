@@ -34,18 +34,21 @@ def test_refresh_buttons_have_visible_labels_everywhere() -> None:
     jobs = Path('frontend/src/features/jobs/index.tsx').read_text(encoding='utf-8')
     threads = Path('frontend/src/features/threads/index.tsx').read_text(encoding='utf-8')
     personas = Path('frontend/src/features/personas/index.tsx').read_text(encoding='utf-8')
+    auths = Path('frontend/src/features/auths/index.tsx').read_text(encoding='utf-8')
+    search_queries = Path('frontend/src/features/search-queries/index.tsx').read_text(encoding='utf-8')
     assert "onClick={() => void load()}" in jobs
     assert "onClick={() => void loadThreads()}" in threads
-    assert "onClick={() => void loadPersonas()}" not in personas
+    assert "onClick={() => void loadPersonas()}" in personas
+    assert "onClick={() => void loadAuths()}" in auths
+    assert "onClick={() => void load()}" in search_queries
     assert "size='sm'" in personas
     assert "aria-label='Manual refresh jobs'" in jobs
     assert "aria-label='Manual refresh threads'" in threads
     assert "aria-label='Refresh jobs'" not in jobs
     assert "aria-label='Refresh threads'" not in threads
-    assert "Refresh\n          </Button>" not in jobs
-    assert "Refresh\n          </Button>" not in threads
-    assert "Refresh\n          </Button>" not in personas
-    assert "aria-label='Refresh personas'" not in personas
+    assert "Refresh\n          </Button>" in personas
+    assert "Refresh\n          </Button>" in auths
+    assert 'Refresh' in search_queries
     assert "inline-flex h-8 items-center overflow-hidden rounded-md border" in jobs
     assert "inline-flex h-8 items-center overflow-hidden rounded-md border" in threads
 
@@ -64,13 +67,15 @@ def test_jobs_split_refresh_control_matches_create_button_height() -> None:
     assert "className='h-full rounded-none gap-2 px-3'" in jobs
 
 
-def test_jobs_buttons_order_create_before_refresh_split() -> None:
+def test_jobs_buttons_order_refresh_before_create() -> None:
     jobs = Path('frontend/src/features/jobs/index.tsx').read_text(encoding='utf-8')
-    assert jobs.index('Create job') < jobs.index("aria-label='Manual refresh jobs'")
+    assert jobs.index("aria-label='Manual refresh jobs'") < jobs.index('Create job')
+    assert "<Plus className='size-4' />" in jobs
 
 
-def test_threads_header_matches_jobs_button_set() -> None:
+def test_threads_header_has_refresh_controls_without_create_action() -> None:
     threads = Path('frontend/src/features/threads/index.tsx').read_text(encoding='utf-8')
-    assert 'Create job' in threads
+    assert 'Create job' not in threads
     assert "aria-label='Manual refresh threads'" in threads
     assert "aria-label='Auto-refresh threads'" in threads
+    assert "<Plus className='size-4' />" not in threads

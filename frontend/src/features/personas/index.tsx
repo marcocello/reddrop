@@ -10,16 +10,19 @@ import {
   getFilteredRowModel,
   getPaginationRowModel,
   getSortedRowModel,
+  type RowSelectionState,
   type SortingState,
   useReactTable,
   type VisibilityState,
 } from '@tanstack/react-table'
-import { Copy, MoreHorizontal, Pencil, Trash2 } from 'lucide-react'
+import { Copy, MoreHorizontal, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { DataTableColumnHeader, DataTablePagination, DataTableToolbar } from '@/components/data-table'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
+import { SelectionActionBar } from '@/components/selection-action-bar'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -54,14 +57,19 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
-import { reddropApi, type PersonaProfile } from '@/lib/reddrop-api'
+import { reddropApi, type Job, type PersonaProfile } from '@/lib/reddrop-api'
 
 const ACTIONS_COLUMN_ID = 'actions'
+const SELECT_COLUMN_ID = 'select'
+const PERSONA_OBJECTIVE_PLACEHOLDER = `## Objectives
+......
+
+# Tone & Style
+.....`
 
 function buildDefaultPersona(): PersonaProfile {
   return {
     name: '',
-    description: '',
     objective: '',
   }
 }
@@ -69,7 +77,6 @@ function buildDefaultPersona(): PersonaProfile {
 function normalizePersona(payload: PersonaProfile): PersonaProfile {
   return {
     name: payload.name.trim(),
-    description: payload.description.trim(),
     objective: payload.objective.trim(),
   }
 }
@@ -87,6 +94,8 @@ function buildDuplicatePersonaName(baseName: string, existingNames: Set<string>)
 
 export function PersonasPage() {
   const [personas, setPersonas] = useState<PersonaProfile[]>([])
+  const [jobs, setJobs] = useState<Job[]>([])
+  const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [sorting, setSorting] = useState<SortingState>([{ id: 'name', desc: false }])
@@ -94,25 +103,34 @@ export function PersonasPage() {
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
   const [columnOrder, setColumnOrder] = useState<ColumnOrderState>([])
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   const [draggingColumnId, setDraggingColumnId] = useState<string | null>(null)
 
   const [sheetOpen, setSheetOpen] = useState(false)
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
-  const [pendingDeletePersona, setPendingDeletePersona] = useState<PersonaProfile | null>(null)
+  const [pendingDeletePersona, setPendingDeletePersona] = useState<{ persona: PersonaProfile; relatedJobs: Job[] } | null>(null)
+  const [pendingDeletePersonas, setPendingDeletePersonas] = useState<{ personas: PersonaProfile[]; relatedJobs: Job[] } | null>(null)
   const [selectedPersona, setSelectedPersona] = useState<PersonaProfile | null>(null)
   const [form, setForm] = useState<PersonaProfile>(buildDefaultPersona)
 
   const loadPersonas = useCallback(async (): Promise<void> => {
+    setLoading(true)
     try {
-      const payload = await reddropApi.listPersonas()
-      setPersonas(payload.personas)
+      const [personasPayload, jobsPayload] = await Promise.all([
+        reddropApi.listPersonas(),
+        reddropApi.listJobs(),
+      ])
+      setPersonas(personasPayload.personas)
+      setJobs(jobsPayload.jobs)
       setSelectedPersona((prev) => {
         if (!prev) return null
-        return payload.personas.find((item) => item.name === prev.name) ?? null
+        return personasPayload.personas.find((item) => item.name === prev.name) ?? null
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load personas'
       toast.error(message)
+    } finally {
+      setLoading(false)
     }
   }, [])
 
@@ -150,8 +168,8 @@ export function PersonasPage() {
 
   const saveFromSheet = useCallback(async (): Promise<void> => {
     const normalized = normalizePersona(form)
-    if (!normalized.name || !normalized.description || !normalized.objective) {
-      toast.error('Name, description, and objective are required.')
+    if (!normalized.name || !normalized.objective) {
+      toast.error('Name and objective are required.')
       return
     }
 
@@ -185,16 +203,84 @@ export function PersonasPage() {
     setCreateDialogOpen(false)
   }, [form, personas, persistPersonas, selectedPersona])
 
-  const deletePersona = useCallback(async (persona: PersonaProfile): Promise<void> => {
+  const relatedReplyJobsForPersona = useCallback((personaName: string): Job[] => {
+    const target = personaName.trim().toLowerCase()
+    if (!target) return []
+    return jobs.filter((item) => {
+      if (item.job_type !== 'reply') return false
+      const names = (item.personas ?? []).map((entry) => entry.trim().toLowerCase()).filter(Boolean)
+      return names.includes(target)
+    })
+  }, [jobs])
+
+  const deletePersona = useCallback(async (persona: PersonaProfile, cascade: boolean): Promise<void> => {
     const key = `${persona.name}:delete`
     setBusyKey(key)
-    const next = personas.filter((item) => item.name !== persona.name)
-    await persistPersonas(next, `Deleted persona ${persona.name}`)
-    if (selectedPersona?.name === persona.name) {
-      setSelectedPersona(null)
-      setSheetOpen(false)
+    try {
+      if (cascade) await reddropApi.deletePersonaCascade(persona.name)
+      else await reddropApi.deletePersona(persona.name)
+      toast.success(`Deleted persona ${persona.name}`)
+      await loadPersonas()
+      if (selectedPersona?.name === persona.name) {
+        setSelectedPersona(null)
+        setSheetOpen(false)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `Failed to delete ${persona.name}`
+      toast.error(message)
+    } finally {
+      setBusyKey(null)
     }
-  }, [personas, persistPersonas, selectedPersona?.name])
+  }, [loadPersonas, selectedPersona?.name])
+
+  const requestDeleteSelectedPersonas = useCallback((): void => {
+    const selectedNames = new Set(
+      Object.entries(rowSelection)
+        .filter(([, selected]) => Boolean(selected))
+        .map(([name]) => name)
+    )
+    const selected = personas.filter((item) => selectedNames.has(item.name))
+    if (selected.length === 0) return
+    const relatedById = new Map<string, Job>()
+    for (const persona of selected) {
+      for (const related of relatedReplyJobsForPersona(persona.name)) {
+        relatedById.set(related.id, related)
+      }
+    }
+    setPendingDeletePersonas({
+      personas: selected,
+      relatedJobs: Array.from(relatedById.values()),
+    })
+  }, [personas, relatedReplyJobsForPersona, rowSelection])
+
+  const deleteSelectedPersonas = useCallback(async (): Promise<void> => {
+    if (!pendingDeletePersonas) return
+    setBusyKey('bulk-delete')
+    let deletedCount = 0
+    let firstError = ''
+    for (const persona of pendingDeletePersonas.personas) {
+      try {
+        const related = relatedReplyJobsForPersona(persona.name)
+        if (related.length > 0) await reddropApi.deletePersonaCascade(persona.name)
+        else await reddropApi.deletePersona(persona.name)
+        deletedCount += 1
+      } catch (error) {
+        if (!firstError) {
+          firstError = error instanceof Error ? error.message : `Failed to delete ${persona.name}`
+        }
+      }
+    }
+    setPendingDeletePersonas(null)
+    setRowSelection({})
+    await loadPersonas()
+    if (deletedCount > 0) {
+      toast.success(`Deleted ${deletedCount} persona${deletedCount === 1 ? '' : 's'}`)
+    }
+    if (firstError) {
+      toast.error(firstError)
+    }
+    setBusyKey(null)
+  }, [loadPersonas, pendingDeletePersonas, relatedReplyJobsForPersona])
 
   const duplicatePersona = useCallback(async (persona: PersonaProfile): Promise<void> => {
     const key = `${persona.name}:duplicate`
@@ -212,17 +298,47 @@ export function PersonasPage() {
   }, [personas, persistPersonas])
 
   const requestDeletePersona = useCallback((persona: PersonaProfile): void => {
-    setPendingDeletePersona(persona)
-  }, [])
+    setPendingDeletePersona({
+      persona,
+      relatedJobs: relatedReplyJobsForPersona(persona.name),
+    })
+  }, [relatedReplyJobsForPersona])
 
   const confirmDeletePersona = useCallback(async (): Promise<void> => {
     if (!pendingDeletePersona) return
-    await deletePersona(pendingDeletePersona)
+    await deletePersona(pendingDeletePersona.persona, pendingDeletePersona.relatedJobs.length > 0)
     setPendingDeletePersona(null)
   }, [deletePersona, pendingDeletePersona])
 
+  const confirmDeleteSelectedPersonas = useCallback(async (): Promise<void> => {
+    await deleteSelectedPersonas()
+  }, [deleteSelectedPersonas])
+
   const columns = useMemo<ColumnDef<PersonaProfile>[]>(
     () => [
+      {
+        id: SELECT_COLUMN_ID,
+        enableSorting: false,
+        enableHiding: false,
+        header: ({ table }) => (
+          <Checkbox
+            aria-label='Select all personas'
+            checked={
+              table.getIsAllPageRowsSelected() ||
+              (table.getIsSomePageRowsSelected() && 'indeterminate')
+            }
+            onCheckedChange={(value) => table.toggleAllPageRowsSelected(Boolean(value))}
+          />
+        ),
+        cell: ({ row }) => (
+          <Checkbox
+            aria-label={`Select persona ${row.original.name}`}
+            checked={row.getIsSelected()}
+            onCheckedChange={(value) => row.toggleSelected(Boolean(value))}
+            onClick={(event) => event.stopPropagation()}
+          />
+        ),
+      },
       {
         accessorKey: 'name',
         header: ({ column }) => <DataTableColumnHeader column={column} title='Name' />,
@@ -230,17 +346,8 @@ export function PersonasPage() {
         cell: ({ row }) => <span className='font-medium'>{row.original.name}</span>,
       },
       {
-        accessorKey: 'description',
-        header: ({ column }) => <DataTableColumnHeader column={column} title='Description' />,
-        cell: ({ row }) => (
-          <span className='block max-w-[30rem] truncate' title={row.original.description}>
-            {row.original.description}
-          </span>
-        ),
-      },
-      {
         accessorKey: 'objective',
-        header: ({ column }) => <DataTableColumnHeader column={column} title='Objective' />,
+        header: ({ column }) => <DataTableColumnHeader column={column} title='Objective, tone & style' />,
         cell: ({ row }) => (
           <span className='block max-w-[30rem] truncate' title={row.original.objective}>
             {row.original.objective}
@@ -316,7 +423,13 @@ export function PersonasPage() {
   }, [orderedColumnIds])
 
   const moveColumn = useCallback((fromId: string, toId: string): void => {
-    if (fromId === toId || fromId === ACTIONS_COLUMN_ID || toId === ACTIONS_COLUMN_ID) return
+    if (
+      fromId === toId ||
+      fromId === ACTIONS_COLUMN_ID ||
+      toId === ACTIONS_COLUMN_ID ||
+      fromId === SELECT_COLUMN_ID ||
+      toId === SELECT_COLUMN_ID
+    ) return
     setColumnOrder((previous) => {
       const next = previous.length > 0 ? [...previous] : [...orderedColumnIds]
       const fromIndex = next.indexOf(fromId)
@@ -337,7 +450,9 @@ export function PersonasPage() {
       globalFilter,
       columnVisibility,
       columnOrder,
+      rowSelection,
     },
+    enableRowSelection: true,
     enableGlobalFilter: true,
     globalFilterFn: (row, _columnId, filterValue) => {
       const query = String(filterValue ?? '').trim().toLowerCase()
@@ -345,7 +460,6 @@ export function PersonasPage() {
       const persona = row.original
       return (
         persona.name.toLowerCase().includes(query) ||
-        persona.description.toLowerCase().includes(query) ||
         persona.objective.toLowerCase().includes(query)
       )
     },
@@ -354,6 +468,8 @@ export function PersonasPage() {
     onGlobalFilterChange: setGlobalFilter,
     onColumnVisibilityChange: setColumnVisibility,
     onColumnOrderChange: setColumnOrder,
+    onRowSelectionChange: setRowSelection,
+    getRowId: (row) => row.name,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -380,22 +496,12 @@ export function PersonasPage() {
       </div>
 
       <div className='space-y-2'>
-        <Label htmlFor={`${prefix}-persona-description`}>Description</Label>
-        <Textarea
-          id={`${prefix}-persona-description`}
-          value={form.description}
-          onChange={(event) => setForm((prev) => ({ ...prev, description: event.target.value }))}
-          rows={6}
-          required
-        />
-      </div>
-
-      <div className='space-y-2'>
-        <Label htmlFor={`${prefix}-persona-objective`}>Objective</Label>
+        <Label htmlFor={`${prefix}-persona-objective`}>Objective, tone & style</Label>
         <Textarea
           id={`${prefix}-persona-objective`}
           value={form.objective}
           onChange={(event) => setForm((prev) => ({ ...prev, objective: event.target.value }))}
+          placeholder={PERSONA_OBJECTIVE_PLACEHOLDER}
           rows={6}
           required
         />
@@ -407,7 +513,12 @@ export function PersonasPage() {
     <>
       <Header fixed>
         <div className='ms-auto flex items-center gap-2'>
+          <Button size='sm' variant='outline' onClick={() => void loadPersonas()} disabled={loading || saving}>
+            <RefreshCw className='size-4' />
+            Refresh
+          </Button>
           <Button size='sm' onClick={openCreateDialog}>
+            <Plus className='size-4' />
             Create persona
           </Button>
         </div>
@@ -420,7 +531,7 @@ export function PersonasPage() {
 
         <DataTableToolbar
           table={table}
-          searchPlaceholder='Search by name, description or objective...'
+          searchPlaceholder='Search by name or objective...'
         />
 
         <div className='space-y-4'>
@@ -434,25 +545,25 @@ export function PersonasPage() {
                         key={header.id}
                         className={cn(
                           header.column.id === draggingColumnId && 'opacity-50',
-                          header.column.id !== ACTIONS_COLUMN_ID && 'cursor-move',
+                          header.column.id !== ACTIONS_COLUMN_ID && header.column.id !== SELECT_COLUMN_ID && 'cursor-move',
                           header.column.id === ACTIONS_COLUMN_ID &&
                             'sticky right-0 z-20 bg-background text-right'
                         )}
-                        draggable={header.column.id !== ACTIONS_COLUMN_ID}
+                        draggable={header.column.id !== ACTIONS_COLUMN_ID && header.column.id !== SELECT_COLUMN_ID}
                         onDragStart={(event) => {
-                          if (header.column.id === ACTIONS_COLUMN_ID) return
+                          if (header.column.id === ACTIONS_COLUMN_ID || header.column.id === SELECT_COLUMN_ID) return
                           setDraggingColumnId(header.column.id)
                           event.dataTransfer.effectAllowed = 'move'
                           event.dataTransfer.setData('text/plain', header.column.id)
                         }}
                         onDragOver={(event) => {
-                          if (!draggingColumnId || header.column.id === ACTIONS_COLUMN_ID) return
+                          if (!draggingColumnId || header.column.id === ACTIONS_COLUMN_ID || header.column.id === SELECT_COLUMN_ID) return
                           if (draggingColumnId === header.column.id) return
                           event.preventDefault()
                           event.dataTransfer.dropEffect = 'move'
                         }}
                         onDrop={(event) => {
-                          if (header.column.id === ACTIONS_COLUMN_ID) return
+                          if (header.column.id === ACTIONS_COLUMN_ID || header.column.id === SELECT_COLUMN_ID) return
                           event.preventDefault()
                           const source = draggingColumnId ?? event.dataTransfer.getData('text/plain')
                           if (!source) return
@@ -475,6 +586,7 @@ export function PersonasPage() {
                     <TableRow
                       key={row.id}
                       className='cursor-pointer'
+                      data-state={row.getIsSelected() && 'selected'}
                       onClick={() => openPersonaSheet(row.original)}
                     >
                       {row.getVisibleCells().map((cell) => (
@@ -505,6 +617,15 @@ export function PersonasPage() {
         </div>
       </Main>
 
+      <SelectionActionBar
+        selectedCount={table.getSelectedRowModel().rows.length}
+        entityLabel='persona'
+        onClear={() => setRowSelection({})}
+        onDelete={() => requestDeleteSelectedPersonas()}
+        deleteLabel='Delete selected'
+        deleteDisabled={busyKey === 'bulk-delete'}
+      />
+
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent className='sm:max-w-2xl'>
           <ModalDialogHeader>
@@ -514,7 +635,7 @@ export function PersonasPage() {
             </DialogDescription>
           </ModalDialogHeader>
 
-          <div className='max-h-[70vh] space-y-4 overflow-y-auto pr-1'>
+          <div className='max-h-[80vh] space-y-4 overflow-y-auto pr-1'>
             {renderPersonaFormFields('dialog')}
           </div>
 
@@ -541,13 +662,52 @@ export function PersonasPage() {
         title='Delete persona'
         desc={
           pendingDeletePersona
-            ? `This action will permanently delete "${pendingDeletePersona.name}".`
+            ? pendingDeletePersona.relatedJobs.length > 0
+              ? (
+                  <>
+                    <p>
+                      This action will delete "{pendingDeletePersona.persona.name}" and related reply jobs.
+                    </p>
+                    <p className='mt-2 text-xs text-muted-foreground'>
+                      Related replies: {pendingDeletePersona.relatedJobs.map((item) => item.name).join(', ')}
+                    </p>
+                  </>
+                )
+              : `This action will permanently delete "${pendingDeletePersona.persona.name}".`
             : 'This action will permanently delete this persona.'
         }
         confirmText='Delete'
         destructive
-        isLoading={pendingDeletePersona !== null && busyKey === `${pendingDeletePersona.name}:delete`}
+        isLoading={pendingDeletePersona !== null && busyKey === `${pendingDeletePersona.persona.name}:delete`}
         handleConfirm={() => void confirmDeletePersona()}
+      />
+
+      <ConfirmDialog
+        open={pendingDeletePersonas !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeletePersonas(null)
+        }}
+        title='Delete selected personas'
+        desc={
+          pendingDeletePersonas
+            ? pendingDeletePersonas.relatedJobs.length > 0
+              ? (
+                  <>
+                    <p>
+                      This will delete {pendingDeletePersonas.personas.length} selected personas and related reply jobs.
+                    </p>
+                    <p className='mt-2 text-xs text-muted-foreground'>
+                      Related replies: {pendingDeletePersonas.relatedJobs.map((item) => item.name).join(', ')}
+                    </p>
+                  </>
+                )
+              : `This action will permanently delete ${pendingDeletePersonas.personas.length} selected persona${pendingDeletePersonas.personas.length === 1 ? '' : 's'}.`
+            : ''
+        }
+        confirmText='Delete'
+        destructive
+        isLoading={busyKey === 'bulk-delete'}
+        handleConfirm={() => void confirmDeleteSelectedPersonas()}
       />
 
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>

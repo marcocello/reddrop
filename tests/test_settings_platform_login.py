@@ -50,6 +50,7 @@ def test_linkedin_login_endpoint_uses_service_login_flow(tmp_path, monkeypatch) 
     _setup_isolated_runtime(tmp_path, monkeypatch)
 
     captured: dict[str, object] = {}
+    resolver_state = {"value": "example-user"}
 
     class _FakeLinkedinService:
         @staticmethod
@@ -62,6 +63,16 @@ def test_linkedin_login_endpoint_uses_service_login_flow(tmp_path, monkeypatch) 
                 "user_data_dir": user_data_dir,
                 "login_url": login_url,
             }
+
+        @staticmethod
+        def resolve_saved_session_username(*, user_data_dir: str) -> str:
+            captured["resolve_user_data_dir"] = user_data_dir
+            return str(resolver_state["value"])
+
+        @staticmethod
+        def validate_saved_session(*, user_data_dir: str) -> bool:
+            captured["validate_user_data_dir"] = user_data_dir
+            return True
 
     monkeypatch.setattr(api_main, "LinkedinService", _FakeLinkedinService)
 
@@ -91,6 +102,12 @@ def test_linkedin_login_endpoint_uses_service_login_flow(tmp_path, monkeypatch) 
         assert payload['status'] == 'session_saved'
         assert 'auth_id' in payload
         assert payload['auth_id'] == 'linkedin-main'
+        resolver_state["value"] = "changed-after-login"
+        auths = client.get('/auths')
+        assert auths.status_code == 200
+        by_id = {item['id']: item for item in auths.json()['auths']}
+        assert by_id['linkedin-main']['linkedin_username'] == 'example-user'
+        assert by_id['linkedin-main']['status'] == 'ok'
 
     assert '.reddrop/auth/linkedin/linkedin-main-linkedin' in str(captured['user_data_dir'])
     assert not str(captured['user_data_dir']).startswith(str(Path.home() / '.reddrop'))
@@ -114,6 +131,20 @@ def test_linkedin_service_verifies_login_completion_and_closes_browser() -> None
     assert 'time.sleep(wait_seconds)' not in source
     assert 'finally:' in source
     assert 'context.close()' in source
+
+
+def test_linkedin_username_resolution_uses_voyager_api_fallback() -> None:
+    source = Path('backend/services/linkedin_service.py').read_text(encoding='utf-8')
+    assert 'https://www.linkedin.com/voyager/api/me' in source
+    assert 'csrf-token' in source
+    assert 'JSESSIONID' in source
+    assert 'publicIdentifier' in source
+
+
+def test_linkedin_login_persists_session_in_profile_dir() -> None:
+    source = Path('backend/services/linkedin_service.py').read_text(encoding='utf-8')
+    assert 'launch_persistent_context(' in source
+    assert '--incognito' not in source
 
 
 def test_linkedin_defaults_use_project_local_reddrop_paths() -> None:

@@ -30,6 +30,22 @@ def _setup_isolated_runtime(tmp_path, monkeypatch):
     return home, runs, jobs
 
 
+def _create_frozen_search_path(client: TestClient, *, name: str, social: str, topic: str) -> dict:
+    generated = client.post(
+        '/search-queries/generate',
+        json={
+            'name': name,
+            'social': social,
+            'topic': topic,
+        },
+    )
+    assert generated.status_code == 200
+    path = generated.json()['search_query']
+    saved = client.post(f"/search-queries/{path['id']}/save")
+    assert saved.status_code == 200
+    return saved.json()['search_query']
+
+
 def test_job_config_store_persist_avoids_direct_write_text(tmp_path, monkeypatch) -> None:
     config_path = tmp_path / 'jobs_config.json'
     config_path.write_text('{"jobs": []}', encoding='utf-8')
@@ -78,12 +94,15 @@ def test_threads_endpoint_reuses_cached_rows_when_artifacts_unchanged(tmp_path, 
                         'social': 'reddit',
                         'reddit_client_id': 'id',
                         'reddit_client_secret': 'secret',
+                        'reddit_username': 'alice',
+                        'reddit_password': 'pw',
                     }
                 ]
             },
         )
         assert auths.status_code == 200
-        created = client.post('/jobs', json={'name': 'search-only', 'topic': 'AI launch strategy', 'auth_id': 'reddit-main'})
+        path = _create_frozen_search_path(client, name='search-only-path', social='reddit', topic='AI launch strategy')
+        created = client.post('/jobs', json={'name': 'search-only', 'search_query_id': path['id'], 'auth_id': 'reddit-main'})
         assert created.status_code == 200
         job = created.json()
 
@@ -91,7 +110,7 @@ def test_threads_endpoint_reuses_cached_rows_when_artifacts_unchanged(tmp_path, 
             SearchArtifact(
                 id=job['id'],
                 name=job['name'],
-                topic=job['topic'],
+                topic='AI launch strategy',
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc),
                 conversations=[
@@ -139,7 +158,7 @@ def test_threads_expose_reply_linkage_and_reply_endpoint_accepts_reply_job_ref(t
             normalized = name.strip()
             if not normalized:
                 return None
-            return PersonaProfile(name=normalized, description='d', objective='o')
+            return PersonaProfile(name=normalized, objective='o. direct tone.')
 
     monkeypatch.setattr(api_main, 'PersonaStore', _FakePersonaStore)
 
@@ -154,12 +173,15 @@ def test_threads_expose_reply_linkage_and_reply_endpoint_accepts_reply_job_ref(t
                         'social': 'reddit',
                         'reddit_client_id': 'id',
                         'reddit_client_secret': 'secret',
+                        'reddit_username': 'alice',
+                        'reddit_password': 'pw',
                     }
                 ]
             },
         )
         assert auths.status_code == 200
-        created_search = client.post('/jobs', json={'name': 'search-only', 'topic': 'AI launch strategy', 'auth_id': 'reddit-main'})
+        path = _create_frozen_search_path(client, name='search-only-path', social='reddit', topic='AI launch strategy')
+        created_search = client.post('/jobs', json={'name': 'search-only', 'search_query_id': path['id'], 'auth_id': 'reddit-main'})
         assert created_search.status_code == 200
         search_job = created_search.json()
 
@@ -179,7 +201,7 @@ def test_threads_expose_reply_linkage_and_reply_endpoint_accepts_reply_job_ref(t
             SearchArtifact(
                 id=search_job['id'],
                 name=search_job['name'],
-                topic=search_job['topic'],
+                topic='AI launch strategy',
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc),
                 conversations=[

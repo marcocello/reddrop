@@ -94,7 +94,7 @@ export function NavUser({ user }: NavUserProps) {
                 <DropdownMenuItem asChild>
                   <Link to='/threads'>
                     <CreditCard />
-                    Threads
+                    Conversations
                   </Link>
                 </DropdownMenuItem>
               </DropdownMenuGroup>

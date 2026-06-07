@@ -35,6 +35,11 @@ def test_app_log_config_configures_uvicorn_and_fastapi() -> None:
         assert logger_cfg["propagate"] is False
 
 
+def test_app_log_config_emits_logs_to_stderr() -> None:
+    config = log_config.get_app_log_config()
+    assert config["handlers"]["default"]["stream"] == "ext://sys.stderr"
+
+
 def test_setup_logging_colors_level_without_colorlog(monkeypatch) -> None:
     monkeypatch.setenv("LOG_FORMAT", "short")
     monkeypatch.setenv("LOG_LEVEL", "INFO")

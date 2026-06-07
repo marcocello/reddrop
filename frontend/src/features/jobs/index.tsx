@@ -14,17 +14,20 @@ import {
   getPaginationRowModel,
   getSortedRowModel,
   type FilterFn,
+  type RowSelectionState,
   type SortingState,
   useReactTable,
   type VisibilityState,
 } from '@tanstack/react-table'
-import { ChevronDown, Copy, Eye, MessageSquareReply, MoreHorizontal, Play, Power, PowerOff, RefreshCw, Search, Square, Trash2 } from 'lucide-react'
+import { ChevronDown, Copy, Eye, MessageSquareReply, MoreHorizontal, Play, Plus, Power, PowerOff, RefreshCw, Search, Square, Trash2 } from 'lucide-react'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { DataTableColumnHeader, DataTablePagination, DataTableToolbar } from '@/components/data-table'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
+import { SelectionActionBar } from '@/components/selection-action-bar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -57,7 +60,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Textarea } from '@/components/ui/textarea'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import {
@@ -66,11 +69,13 @@ import {
   type Job,
   type JobType,
   type PersonaProfile,
+  type SearchQuery,
   type SocialPlatform,
   type UpsertJobPayload,
 } from '@/lib/reddrop-api'
 
 const ACTIONS_COLUMN_ID = 'actions'
+const SELECT_COLUMN_ID = 'select'
 const AUTO_REFRESH_OPTIONS = [
   { value: 0, label: 'Off', menuLabel: 'Auto-refresh off' },
   { value: 30, label: 'Every 30s', menuLabel: 'Every 30s' },
@@ -92,6 +97,8 @@ function buildInitialForm(): UpsertJobPayload {
     job_type: 'search',
     social: 'reddit',
     auth_id: null,
+    search_query_id: null,
+    search_query_version: null,
     source_job_id: null,
     topic: '',
     min_similarity_score: 0.35,
@@ -99,6 +106,13 @@ function buildInitialForm(): UpsertJobPayload {
     time_filter: 'week',
     subreddit_limit: 5,
     threads_limit: 10,
+    scroll_rounds: 15,
+    sort_by: 'relevance',
+    selector_wait_timeout_seconds: 20,
+    detail_wait_timeout_seconds: 8,
+    max_comment_expand_clicks: 30,
+    detail_enrich_top_k: 12,
+    search_plan: undefined,
     replies_per_iteration: 3,
     max_runtime_minutes: DEFAULT_RUN_FREQUENCY_MINUTES,
     personas: [],
@@ -130,6 +144,7 @@ function statusBadgeClass(status: string | undefined): string {
   if (status === 'searching') return 'bg-blue-600 text-white'
   if (status === 'replying') return 'bg-cyan-600 text-white'
   if (status === 'sending') return 'bg-emerald-600 text-white'
+  if (status === 'running') return 'bg-blue-600 text-white'
   if (status === 'idle') return 'bg-secondary text-secondary-foreground'
   if (status === 'failed') return 'bg-red-600 text-white'
   if (status === 'stopping') return 'bg-amber-500 text-black'
@@ -176,6 +191,10 @@ function shortId(value: string): string {
 function authDisplayName(auth: AuthProfile): string {
   if (auth.social === 'reddit') {
     const username = auth.reddit_username.trim()
+    if (username) return username
+  }
+  if (auth.social === 'linkedin') {
+    const username = auth.linkedin_username.trim()
     if (username) return username
   }
   const fallbackName = auth.name?.trim()
@@ -252,14 +271,19 @@ export function JobsPage() {
   const [globalFilter, setGlobalFilter] = useState('')
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({})
   const [columnOrder, setColumnOrder] = useState<ColumnOrderState>([])
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({})
   const [draggingColumnId, setDraggingColumnId] = useState<string | null>(null)
 
   const [personaOptions, setPersonaOptions] = useState<PersonaProfile[]>([])
   const [authOptions, setAuthOptions] = useState<AuthProfile[]>([])
+  const [searchQueryOptions, setSearchQueryOptions] = useState<SearchQuery[]>([])
 
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [sheetTab, setSheetTab] = useState<'overview' | 'activity'>('overview')
+  const [jobActivityFilter, setJobActivityFilter] = useState<'all' | 'errors' | 'warnings'>('all')
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [pendingDeleteJob, setPendingDeleteJob] = useState<Job | null>(null)
+  const [pendingDeleteJobs, setPendingDeleteJobs] = useState<Job[]>([])
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [form, setForm] = useState<UpsertJobPayload>(buildInitialForm)
   const [saving, setSaving] = useState(false)
@@ -301,11 +325,22 @@ export function JobsPage() {
     }
   }, [])
 
+  const loadSearchQueries = useCallback(async (): Promise<void> => {
+    try {
+      const payload = await reddropApi.listSearchQueries()
+      setSearchQueryOptions(payload.search_queries)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load search queries'
+      toast.error(message)
+    }
+  }, [])
+
   useEffect(() => {
     void load()
     void loadPersonas()
     void loadAuths()
-  }, [load, loadAuths, loadPersonas])
+    void loadSearchQueries()
+  }, [load, loadAuths, loadPersonas, loadSearchQueries])
 
   useEffect(() => {
     if (autoRefreshSeconds <= 0) {
@@ -376,6 +411,12 @@ export function JobsPage() {
     return map
   }, [authOptions])
 
+  const searchPathById = useMemo(() => {
+    const map = new Map<string, SearchQuery>()
+    searchQueryOptions.forEach((item) => map.set(item.id, item))
+    return map
+  }, [searchQueryOptions])
+
   const openCreateDialog = useCallback((): void => {
     setSelectedJob(null)
     setForm(buildInitialForm())
@@ -385,19 +426,29 @@ export function JobsPage() {
 
   const openJobSheet = useCallback((job: Job): void => {
     setSelectedJob(job)
+    setSheetTab('overview')
+    setJobActivityFilter('all')
     setSheetOpen(true)
   }, [])
 
   const createJob = useCallback(async (): Promise<void> => {
-    const topic = (form.topic ?? '').trim()
     const replyPersonas = form.personas ?? []
     const primaryReplyPersona = replyPersonas[0] ?? ''
-    if (form.job_type === 'search' && !topic) {
-      toast.error('Topic is required for search jobs')
-      return
-    }
+    const selectedSearchQuery = form.search_query_id ? searchPathById.get(form.search_query_id) : null
     if (form.job_type === 'search' && !form.auth_id) {
       toast.error('Auth profile is required for search jobs')
+      return
+    }
+    if (form.job_type === 'search' && !form.search_query_id) {
+      toast.error('Search query is required for search jobs')
+      return
+    }
+    if (form.job_type === 'search' && !selectedSearchQuery) {
+      toast.error('Selected search query is not available')
+      return
+    }
+    if (form.job_type === 'search' && selectedSearchQuery?.status !== 'saved') {
+      toast.error('Search query must be saved before creating a search job')
       return
     }
     if (form.job_type === 'reply' && !form.source_job_id) {
@@ -441,14 +492,27 @@ export function JobsPage() {
         : {
             name: normalizedName,
             job_type: 'search',
-            social: form.social,
+            social: selectedSearchQuery?.social ?? form.social,
             auth_id: form.auth_id,
-            topic,
-            time_filter: form.time_filter,
-            subreddit_limit: form.subreddit_limit,
+            search_query_id: selectedSearchQuery?.id ?? null,
+            search_query_version: selectedSearchQuery?.version ?? null,
             threads_limit: form.threads_limit,
             max_runtime_minutes: form.max_runtime_minutes,
             active: form.active,
+            ...(selectedSearchQuery?.social === 'reddit'
+              ? {
+                  time_filter: form.time_filter,
+                  subreddit_limit: form.subreddit_limit,
+                }
+              : {
+                  time_filter: form.time_filter,
+                  scroll_rounds: form.scroll_rounds,
+                  sort_by: form.sort_by,
+                  selector_wait_timeout_seconds: form.selector_wait_timeout_seconds,
+                  detail_wait_timeout_seconds: form.detail_wait_timeout_seconds,
+                  max_comment_expand_clicks: form.max_comment_expand_clicks,
+                  detail_enrich_top_k: form.detail_enrich_top_k,
+                }),
           }
 
     setSaving(true)
@@ -465,7 +529,7 @@ export function JobsPage() {
     } finally {
       setSaving(false)
     }
-  }, [form, load, sourceSearchAuthById, sourceSearchNameById, sourceSearchSocialById])
+  }, [form, load, searchPathById, sourceSearchAuthById, sourceSearchNameById, sourceSearchSocialById])
 
   const runAction = useCallback(async (job: Job, action: 'start' | 'stop'): Promise<void> => {
     const key = `${job.id}:${action}`
@@ -499,11 +563,12 @@ export function JobsPage() {
     }
   }, [load])
 
-  const deleteJob = useCallback(async (job: Job): Promise<void> => {
+  const deleteJob = useCallback(async (job: Job, cascade: boolean): Promise<void> => {
     const key = `${job.id}:delete`
     setBusyKey(key)
     try {
-      await reddropApi.deleteJob(job.id)
+      if (cascade) await reddropApi.deleteJobCascade(job.id)
+      else await reddropApi.deleteJob(job.id)
       toast.success(`Deleted job ${job.name}`)
       await load()
       setSelectedJob((prev) => (prev?.id === job.id ? null : prev))
@@ -517,6 +582,51 @@ export function JobsPage() {
       setBusyKey(null)
     }
   }, [load, selectedJob?.id])
+
+  const requestDeleteSelectedJobs = useCallback((): void => {
+    const selectedIds = new Set(
+      Object.entries(rowSelection)
+        .filter(([, selected]) => Boolean(selected))
+        .map(([id]) => id)
+    )
+    const selected = jobs.filter((job) => selectedIds.has(job.id))
+    if (selected.length === 0) return
+    setPendingDeleteJobs(selected)
+  }, [jobs, rowSelection])
+
+  const deleteSelectedJobs = useCallback(async (): Promise<void> => {
+    if (pendingDeleteJobs.length === 0) return
+    setBusyKey('bulk-delete')
+    let deletedRootCount = 0
+    const failures: string[] = []
+    const ordered = [...pendingDeleteJobs].sort((left, right) => {
+      if (left.job_type === right.job_type) return left.name.localeCompare(right.name)
+      return left.job_type === 'reply' ? -1 : 1
+    })
+    for (const job of ordered) {
+      try {
+        if (job.job_type === 'search') await reddropApi.deleteJobCascade(job.id)
+        else await reddropApi.deleteJob(job.id)
+        deletedRootCount += 1
+      } catch (error) {
+        const message = error instanceof Error ? error.message : `Failed to delete ${job.name}`
+        if (message.toLowerCase().includes('job not found')) {
+          continue
+        }
+        failures.push(`${job.name}: ${message}`)
+      }
+    }
+    setRowSelection({})
+    setPendingDeleteJobs([])
+    await load()
+    if (deletedRootCount > 0) {
+      toast.success(`Deleted ${deletedRootCount} job${deletedRootCount === 1 ? '' : 's'}`)
+    }
+    if (failures.length > 0) {
+      toast.error(failures[0])
+    }
+    setBusyKey(null)
+  }, [load, pendingDeleteJobs])
 
   const openDuplicateJobDialog = useCallback((job: Job): void => {
     const existingNames = new Set(jobs.map((item) => item.name.trim().toLowerCase()))
@@ -532,13 +642,22 @@ export function JobsPage() {
       job_type: job.job_type,
       social: job.social,
       auth_id: job.auth_id ?? null,
+      search_query_id: job.search_query_id ?? null,
+      search_query_version: job.search_query_version ?? null,
       source_job_id: job.source_job_id ?? null,
       topic: job.job_type === 'reply' ? '' : (job.topic ?? ''),
+      search_plan: job.job_type === 'search' ? (job.search_plan ?? undefined) : undefined,
       min_similarity_score: job.min_similarity_score ?? 0.35,
       active: job.active,
       time_filter: job.time_filter ?? 'week',
       subreddit_limit: job.subreddit_limit ?? 5,
       threads_limit: job.threads_limit ?? 10,
+      scroll_rounds: job.scroll_rounds ?? 15,
+      sort_by: job.sort_by ?? 'relevance',
+      selector_wait_timeout_seconds: job.selector_wait_timeout_seconds ?? 20,
+      detail_wait_timeout_seconds: job.detail_wait_timeout_seconds ?? 8,
+      max_comment_expand_clicks: job.max_comment_expand_clicks ?? 30,
+      detail_enrich_top_k: job.detail_enrich_top_k ?? 12,
       replies_per_iteration: job.replies_per_iteration ?? 3,
       max_runtime_minutes: normalizeRunFrequencyMinutes(job.max_runtime_minutes),
       personas:
@@ -553,14 +672,63 @@ export function JobsPage() {
     setPendingDeleteJob(job)
   }, [])
 
+  const pendingDeleteJobRelatedReplies = useMemo(() => {
+    if (!pendingDeleteJob || pendingDeleteJob.job_type !== 'search') return [] as Job[]
+    return jobs.filter((item) => item.job_type === 'reply' && item.source_job_id === pendingDeleteJob.id)
+  }, [jobs, pendingDeleteJob])
+
+  const pendingDeleteJobsRelatedReplies = useMemo(() => {
+    if (pendingDeleteJobs.length === 0) return [] as Job[]
+    const selectedIds = new Set(pendingDeleteJobs.map((item) => item.id))
+    const selectedSearchIds = new Set(
+      pendingDeleteJobs.filter((item) => item.job_type === 'search').map((item) => item.id)
+    )
+    if (selectedSearchIds.size === 0) return [] as Job[]
+    const related = jobs.filter(
+      (item) =>
+        item.job_type === 'reply'
+        && Boolean(item.source_job_id)
+        && selectedSearchIds.has(String(item.source_job_id))
+        && !selectedIds.has(item.id)
+    )
+    return related
+  }, [jobs, pendingDeleteJobs])
+
   const confirmDeleteJob = useCallback(async (): Promise<void> => {
     if (!pendingDeleteJob) return
-    await deleteJob(pendingDeleteJob)
+    await deleteJob(pendingDeleteJob, pendingDeleteJobRelatedReplies.length > 0)
     setPendingDeleteJob(null)
-  }, [deleteJob, pendingDeleteJob])
+  }, [deleteJob, pendingDeleteJob, pendingDeleteJobRelatedReplies.length])
+
+  const confirmDeleteSelectedJobs = useCallback(async (): Promise<void> => {
+    await deleteSelectedJobs()
+  }, [deleteSelectedJobs])
 
   const columns = useMemo<ColumnDef<Job>[]>(
     () => [
+      {
+        id: SELECT_COLUMN_ID,
+        enableSorting: false,
+        enableHiding: false,
+        header: ({ table }) => (
+          <Checkbox
+            aria-label='Select all jobs'
+            checked={
+              table.getIsAllPageRowsSelected() ||
+              (table.getIsSomePageRowsSelected() && 'indeterminate')
+            }
+            onCheckedChange={(value) => table.toggleAllPageRowsSelected(Boolean(value))}
+          />
+        ),
+        cell: ({ row }) => (
+          <Checkbox
+            aria-label={`Select job ${row.original.name}`}
+            checked={row.getIsSelected()}
+            onCheckedChange={(value) => row.toggleSelected(Boolean(value))}
+            onClick={(event) => event.stopPropagation()}
+          />
+        ),
+      },
       {
         accessorKey: 'id',
         header: ({ column }) => <DataTableColumnHeader column={column} title='ID' />,
@@ -782,7 +950,13 @@ export function JobsPage() {
   }, [orderedColumnIds])
 
   const moveColumn = useCallback((fromId: string, toId: string): void => {
-    if (fromId === toId || fromId === ACTIONS_COLUMN_ID || toId === ACTIONS_COLUMN_ID) return
+    if (
+      fromId === toId ||
+      fromId === ACTIONS_COLUMN_ID ||
+      toId === ACTIONS_COLUMN_ID ||
+      fromId === SELECT_COLUMN_ID ||
+      toId === SELECT_COLUMN_ID
+    ) return
     setColumnOrder((previous) => {
       const next = previous.length > 0 ? [...previous] : [...orderedColumnIds]
       const fromIndex = next.indexOf(fromId)
@@ -803,7 +977,9 @@ export function JobsPage() {
       globalFilter,
       columnVisibility,
       columnOrder,
+      rowSelection,
     },
+    enableRowSelection: true,
     enableGlobalFilter: true,
     globalFilterFn: (row, _columnId, filterValue) => {
       const query = String(filterValue ?? '').trim().toLowerCase()
@@ -831,6 +1007,8 @@ export function JobsPage() {
     onGlobalFilterChange: setGlobalFilter,
     onColumnVisibilityChange: setColumnVisibility,
     onColumnOrderChange: setColumnOrder,
+    onRowSelectionChange: setRowSelection,
+    getRowId: (row) => row.id,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -848,10 +1026,25 @@ export function JobsPage() {
   const selectedDeactivateKey = selectedJob ? `${selectedJob.id}:deactivate` : ''
   const selectedDeleteKey = selectedJob ? `${selectedJob.id}:delete` : ''
   const selectedLogs = selectedJob?.runtime?.logs ?? []
+  const filteredSelectedLogs = useMemo(() => {
+    if (jobActivityFilter === 'all') return selectedLogs
+    if (jobActivityFilter === 'errors') {
+      return selectedLogs.filter((entry) => /(error|fail|exception)/i.test(entry.message))
+    }
+    return selectedLogs.filter((entry) => /(warn|retry|slow)/i.test(entry.message))
+  }, [jobActivityFilter, selectedLogs])
   const SelectedJobTypeIcon = selectedJob ? jobTypeIcon(selectedJob.job_type) : null
 
   const renderJobFormFields = (prefix: string) => {
     const availableAuthOptions = authOptions.filter((auth) => auth.social === form.social)
+    const availableSearchQueryOptions = searchQueryOptions.filter((item) => {
+      if (item.status !== 'saved') return false
+      if (item.social !== form.social) return false
+      return true
+    })
+    const isLinkedinSearch = form.job_type === 'search' && form.social === 'linkedin'
+    const showRedditSearchFilters = form.job_type === 'search' && form.social === 'reddit'
+    const showLinkedinSearchFilters = isLinkedinSearch
     return (
       <>
       <div className='space-y-2'>
@@ -873,6 +1066,9 @@ export function JobsPage() {
               job_type: nextType,
               source_job_id: nextType === 'reply' ? prev.source_job_id : null,
               topic: nextType === 'reply' ? '' : prev.topic,
+              search_plan: undefined,
+              search_query_id: nextType === 'search' ? prev.search_query_id : null,
+              search_query_version: nextType === 'search' ? prev.search_query_version : null,
               personas: nextType === 'reply' ? ((prev.personas ?? []).length > 0 ? [prev.personas![0]] : []) : [],
               auth_id: nextType === 'reply' ? sourceAuthId : prev.auth_id,
               name: nextType === 'reply' ? extractReplyPrefix(prev.name, sourceName) : prev.name,
@@ -908,7 +1104,14 @@ export function JobsPage() {
             setForm((prev) => {
               const nextAuth = authOptions.find((auth) => auth.id === prev.auth_id)
               const compatibleAuthId = nextAuth && nextAuth.social === nextSocial ? prev.auth_id : null
-              return { ...prev, social: nextSocial, auth_id: compatibleAuthId }
+              return {
+                ...prev,
+                social: nextSocial,
+                auth_id: compatibleAuthId,
+                search_plan: undefined,
+                search_query_id: null,
+                search_query_version: null,
+              }
             })
           }}
           disabled={form.job_type === 'reply' && Boolean(form.source_job_id)}
@@ -942,7 +1145,15 @@ export function JobsPage() {
         <Label htmlFor={`${prefix}-job-auth`}>Auth profile</Label>
         <Select
           value={form.auth_id ?? undefined}
-          onValueChange={(value) => setForm((prev) => ({ ...prev, auth_id: value }))}
+          onValueChange={(value) =>
+            setForm((prev) => ({
+              ...prev,
+              auth_id: value,
+              search_plan: prev.job_type === 'search' ? undefined : prev.search_plan,
+              search_query_id: prev.job_type === 'search' ? null : prev.search_query_id,
+              search_query_version: prev.job_type === 'search' ? null : prev.search_query_version,
+            }))
+          }
           disabled={form.job_type === 'reply' && Boolean(form.source_job_id)}
         >
           <SelectTrigger id={`${prefix}-job-auth`} className='w-full'>
@@ -951,7 +1162,7 @@ export function JobsPage() {
           <SelectContent>
             {availableAuthOptions.map((auth) => (
               <SelectItem key={auth.id} value={auth.id}>
-                {auth.name}
+                {authDisplayName(auth)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -1034,56 +1245,207 @@ export function JobsPage() {
       {form.job_type === 'search' ? (
         <>
           <div className='space-y-2'>
-            <Label htmlFor={`${prefix}-job-topic`}>Topic</Label>
-            <Textarea
-              id={`${prefix}-job-topic`}
-              value={form.topic}
-              onChange={(event) => setForm((prev) => ({ ...prev, topic: event.target.value }))}
-              placeholder='AI launch strategy'
-              rows={4}
-              required
-            />
+            <Label htmlFor={`${prefix}-search-query-id`}>Search query</Label>
+            <Select
+              value={form.search_query_id ?? undefined}
+              onValueChange={(value) => {
+                const selected = searchPathById.get(value)
+                setForm((prev) => ({
+                  ...prev,
+                  search_query_id: value,
+                  search_query_version: selected?.version ?? null,
+                  social: selected?.social ?? prev.social,
+                  topic: selected?.topic ?? prev.topic,
+                  search_plan: selected?.plan ?? prev.search_plan,
+                }))
+              }}
+            >
+              <SelectTrigger id={`${prefix}-search-query-id`} className='w-full'>
+                <SelectValue placeholder='Select a saved search query' />
+              </SelectTrigger>
+              <SelectContent>
+                {availableSearchQueryOptions.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {item.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className='text-xs text-muted-foreground'>
+              Pick a saved Search Query. Create or edit drafts from the Search Queries page.
+            </p>
           </div>
 
-          <div className='grid gap-3 sm:grid-cols-3'>
-            <div className='space-y-2'>
-              <Label htmlFor={`${prefix}-job-time-filter`}>Time filter</Label>
-              <Select
-                value={form.time_filter}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, time_filter: value }))}
-              >
-                <SelectTrigger id={`${prefix}-job-time-filter`} className='w-full'>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value='hour'>hour</SelectItem>
-                  <SelectItem value='day'>day</SelectItem>
-                  <SelectItem value='week'>week</SelectItem>
-                  <SelectItem value='month'>month</SelectItem>
-                  <SelectItem value='year'>year</SelectItem>
-                  <SelectItem value='all'>all</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+          <div className={
+            showRedditSearchFilters
+              ? 'grid gap-3 sm:grid-cols-3'
+              : showLinkedinSearchFilters
+                ? 'grid gap-3 sm:grid-cols-7'
+                : 'grid gap-3 sm:grid-cols-1'
+          }>
+            {showRedditSearchFilters ? (
+              <>
+                <div className='space-y-2'>
+                  <Label htmlFor={`${prefix}-job-time-filter`}>Time filter</Label>
+                  <Select
+                    value={form.time_filter}
+                    onValueChange={(value) => setForm((prev) => ({ ...prev, time_filter: value }))}
+                  >
+                    <SelectTrigger id={`${prefix}-job-time-filter`} className='w-full'>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value='hour'>hour</SelectItem>
+                      <SelectItem value='day'>day</SelectItem>
+                      <SelectItem value='week'>week</SelectItem>
+                      <SelectItem value='month'>month</SelectItem>
+                      <SelectItem value='year'>year</SelectItem>
+                      <SelectItem value='all'>all</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className='space-y-2'>
+                  <Label htmlFor={`${prefix}-subreddit-limit`}>Subreddit limit</Label>
+                  <Input
+                    id={`${prefix}-subreddit-limit`}
+                    type='number'
+                    min={1}
+                    value={form.subreddit_limit}
+                    onChange={(event) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        subreddit_limit: Number(event.target.value || 1),
+                      }))
+                    }
+                  />
+                </div>
+              </>
+            ) : null}
+
+            {showLinkedinSearchFilters ? (
+              <>
+                <div className='space-y-2'>
+                  <Label htmlFor={`${prefix}-linkedin-time-filter`}>Time filter</Label>
+                  <Select
+                    value={form.time_filter}
+                    onValueChange={(value) => setForm((prev) => ({ ...prev, time_filter: value }))}
+                  >
+                    <SelectTrigger id={`${prefix}-linkedin-time-filter`} className='w-full'>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value='hour'>hour</SelectItem>
+                      <SelectItem value='day'>day</SelectItem>
+                      <SelectItem value='week'>week</SelectItem>
+                      <SelectItem value='month'>month</SelectItem>
+                      <SelectItem value='year'>year</SelectItem>
+                      <SelectItem value='all'>all</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className='space-y-2'>
+                  <Label htmlFor={`${prefix}-linkedin-sort-by`}>Sort by</Label>
+                  <Select
+                    value={form.sort_by}
+                    onValueChange={(value) => setForm((prev) => ({ ...prev, sort_by: value }))}
+                  >
+                    <SelectTrigger id={`${prefix}-linkedin-sort-by`} className='w-full'>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value='relevance'>relevance</SelectItem>
+                      <SelectItem value='recency'>recency</SelectItem>
+                      <SelectItem value='engagement'>engagement</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className='space-y-2'>
+                  <Label htmlFor={`${prefix}-scroll-rounds`}>Scroll rounds</Label>
+                  <Input
+                    id={`${prefix}-scroll-rounds`}
+                    type='number'
+                    min={1}
+                    value={form.scroll_rounds}
+                    onChange={(event) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        scroll_rounds: Number(event.target.value || 1),
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className='space-y-2'>
+                  <Label htmlFor={`${prefix}-selector-wait-timeout-seconds`}>Selector wait (s)</Label>
+                  <Input
+                    id={`${prefix}-selector-wait-timeout-seconds`}
+                    type='number'
+                    min={1}
+                    value={form.selector_wait_timeout_seconds}
+                    onChange={(event) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        selector_wait_timeout_seconds: Number(event.target.value || 1),
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className='space-y-2'>
+                  <Label htmlFor={`${prefix}-detail-wait-timeout-seconds`}>Detail wait (s)</Label>
+                  <Input
+                    id={`${prefix}-detail-wait-timeout-seconds`}
+                    type='number'
+                    min={1}
+                    value={form.detail_wait_timeout_seconds}
+                    onChange={(event) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        detail_wait_timeout_seconds: Number(event.target.value || 1),
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className='space-y-2'>
+                  <Label htmlFor={`${prefix}-max-comment-expand-clicks`}>Expand comments clicks</Label>
+                  <Input
+                    id={`${prefix}-max-comment-expand-clicks`}
+                    type='number'
+                    min={1}
+                    value={form.max_comment_expand_clicks}
+                    onChange={(event) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        max_comment_expand_clicks: Number(event.target.value || 1),
+                      }))
+                    }
+                  />
+                </div>
+
+                <div className='space-y-2'>
+                  <Label htmlFor={`${prefix}-detail-enrich-top-k`}>Detail enrich posts</Label>
+                  <Input
+                    id={`${prefix}-detail-enrich-top-k`}
+                    type='number'
+                    min={1}
+                    value={form.detail_enrich_top_k}
+                    onChange={(event) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        detail_enrich_top_k: Number(event.target.value || 1),
+                      }))
+                    }
+                  />
+                </div>
+              </>
+            ) : null}
 
             <div className='space-y-2'>
-              <Label htmlFor={`${prefix}-subreddit-limit`}>Subreddit limit</Label>
-              <Input
-                id={`${prefix}-subreddit-limit`}
-                type='number'
-                min={1}
-                value={form.subreddit_limit}
-                onChange={(event) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    subreddit_limit: Number(event.target.value || 1),
-                  }))
-                }
-              />
-            </div>
-
-            <div className='space-y-2'>
-              <Label htmlFor={`${prefix}-threads-limit`}>Threads limit</Label>
+              <Label htmlFor={`${prefix}-threads-limit`}>{isLinkedinSearch ? 'Posts limit' : 'Threads limit'}</Label>
               <Input
                 id={`${prefix}-threads-limit`}
                 type='number'
@@ -1206,9 +1568,6 @@ export function JobsPage() {
     <>
       <Header fixed>
         <div className='ms-auto flex items-center gap-2'>
-          <Button size='sm' onClick={openCreateDialog}>
-            Create job
-          </Button>
           <div className='inline-flex h-8 items-center overflow-hidden rounded-md border'>
             <Button
               variant='ghost'
@@ -1240,6 +1599,10 @@ export function JobsPage() {
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
+          <Button size='sm' onClick={openCreateDialog}>
+            <Plus className='size-4' />
+            Create job
+          </Button>
         </div>
       </Header>
 
@@ -1275,25 +1638,25 @@ export function JobsPage() {
                         key={header.id}
                         className={cn(
                           header.column.id === draggingColumnId && 'opacity-50',
-                          header.column.id !== ACTIONS_COLUMN_ID && 'cursor-move',
+                          header.column.id !== ACTIONS_COLUMN_ID && header.column.id !== SELECT_COLUMN_ID && 'cursor-move',
                           header.column.id === ACTIONS_COLUMN_ID &&
                             'sticky right-0 z-20 bg-background text-right'
                         )}
-                        draggable={header.column.id !== ACTIONS_COLUMN_ID}
+                        draggable={header.column.id !== ACTIONS_COLUMN_ID && header.column.id !== SELECT_COLUMN_ID}
                         onDragStart={(event) => {
-                          if (header.column.id === ACTIONS_COLUMN_ID) return
+                          if (header.column.id === ACTIONS_COLUMN_ID || header.column.id === SELECT_COLUMN_ID) return
                           setDraggingColumnId(header.column.id)
                           event.dataTransfer.effectAllowed = 'move'
                           event.dataTransfer.setData('text/plain', header.column.id)
                         }}
                         onDragOver={(event) => {
-                          if (!draggingColumnId || header.column.id === ACTIONS_COLUMN_ID) return
+                          if (!draggingColumnId || header.column.id === ACTIONS_COLUMN_ID || header.column.id === SELECT_COLUMN_ID) return
                           if (draggingColumnId === header.column.id) return
                           event.preventDefault()
                           event.dataTransfer.dropEffect = 'move'
                         }}
                         onDrop={(event) => {
-                          if (header.column.id === ACTIONS_COLUMN_ID) return
+                          if (header.column.id === ACTIONS_COLUMN_ID || header.column.id === SELECT_COLUMN_ID) return
                           event.preventDefault()
                           const source = draggingColumnId ?? event.dataTransfer.getData('text/plain')
                           if (!source) return
@@ -1316,6 +1679,7 @@ export function JobsPage() {
                     <TableRow
                       key={row.id}
                       className='cursor-pointer'
+                      data-state={row.getIsSelected() && 'selected'}
                       onClick={() => openJobSheet(row.original)}
                     >
                       {row.getVisibleCells().map((cell) => (
@@ -1345,6 +1709,15 @@ export function JobsPage() {
           <DataTablePagination table={table} />
         </div>
       </Main>
+
+      <SelectionActionBar
+        selectedCount={table.getSelectedRowModel().rows.length}
+        entityLabel='job'
+        onClear={() => setRowSelection({})}
+        onDelete={() => requestDeleteSelectedJobs()}
+        deleteLabel='Delete selected'
+        deleteDisabled={busyKey === 'bulk-delete'}
+      />
 
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent className='sm:max-w-2xl'>
@@ -1382,13 +1755,50 @@ export function JobsPage() {
         title='Delete job'
         desc={
           pendingDeleteJob
-            ? `This action will permanently delete "${pendingDeleteJob.name}".`
+            ? pendingDeleteJobRelatedReplies.length > 0
+              ? (
+                  <>
+                    <p>This action will delete "{pendingDeleteJob.name}" and related reply jobs.</p>
+                    <p className='mt-2 text-xs text-muted-foreground'>
+                      Related replies: {pendingDeleteJobRelatedReplies.map((item) => item.name).join(', ')}
+                    </p>
+                  </>
+                )
+              : `This action will permanently delete "${pendingDeleteJob.name}".`
             : 'This action will permanently delete this job.'
         }
         confirmText='Delete'
         destructive
         isLoading={pendingDeleteJob !== null && busyKey === `${pendingDeleteJob.id}:delete`}
         handleConfirm={() => void confirmDeleteJob()}
+      />
+
+      <ConfirmDialog
+        open={pendingDeleteJobs.length > 0}
+        onOpenChange={(open) => {
+          if (!open) setPendingDeleteJobs([])
+        }}
+        title='Delete selected jobs'
+        desc={
+          pendingDeleteJobs.length > 0
+            ? pendingDeleteJobsRelatedReplies.length > 0
+              ? (
+                  <>
+                    <p>
+                      This will delete {pendingDeleteJobs.length} selected jobs and {pendingDeleteJobsRelatedReplies.length} related reply jobs.
+                    </p>
+                    <p className='mt-2 text-xs text-muted-foreground'>
+                      Related replies: {pendingDeleteJobsRelatedReplies.map((item) => item.name).join(', ')}
+                    </p>
+                  </>
+                )
+              : `This action will permanently delete ${pendingDeleteJobs.length} selected job${pendingDeleteJobs.length === 1 ? '' : 's'}.`
+            : ''
+        }
+        confirmText='Delete'
+        destructive
+        isLoading={busyKey === 'bulk-delete'}
+        handleConfirm={() => void confirmDeleteSelectedJobs()}
       />
 
       <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
@@ -1399,6 +1809,29 @@ export function JobsPage() {
               <SheetDescription>
                 Runtime controls and job details.
               </SheetDescription>
+              {selectedJob ? (
+                <div className='mt-2 flex flex-wrap items-center gap-1.5'>
+                  <Badge className='bg-muted text-muted-foreground'>ID {shortId(selectedJob.id)}</Badge>
+                  <Badge className='bg-muted text-muted-foreground'>
+                    <span className='inline-flex items-center gap-1.5'>
+                      {SelectedJobTypeIcon ? <SelectedJobTypeIcon className='size-3.5' /> : null}
+                      Type {formatJobType(selectedJob.job_type)}
+                    </span>
+                  </Badge>
+                  <Badge className='bg-muted text-muted-foreground'>
+                    <span className='inline-flex items-center gap-1.5'>
+                      <FontAwesomeIcon icon={socialIcon(selectedJob.social)} className='size-3.5' />
+                      {formatSocial(selectedJob.social)}
+                    </span>
+                  </Badge>
+                  <Badge className={activeBadgeClass(selectedJob.active)}>
+                    {selectedJob.active ? 'Active' : 'Inactive'}
+                  </Badge>
+                  <Badge className={statusBadgeClass(selectedJob.runtime?.status)}>
+                    {formatStatusLabel(selectedJob.runtime?.status)}
+                  </Badge>
+                </div>
+              ) : null}
             </SheetHeader>
 
             <div className='sticky top-0 z-10 mt-3 flex items-center gap-2 border-y bg-background px-4 py-3'>
@@ -1448,68 +1881,171 @@ export function JobsPage() {
               ) : null}
             </div>
 
-            <div className='flex-1 space-y-4 overflow-y-auto px-4 py-4'>
-              {selectedJob ? (
-                <div className='grid gap-3 text-sm'>
-                  <p><span className='font-medium'>ID:</span> <span className='font-mono'>{selectedJob.id}</span></p>
-                  <p><span className='font-medium'>Name:</span> {selectedJob.name}</p>
-                  <p>
-                    <span className='font-medium'>Type:</span>{' '}
-                    <span className='inline-flex items-center gap-1.5'>
-                      {SelectedJobTypeIcon ? <SelectedJobTypeIcon className='size-3.5' /> : null}
-                      {formatJobType(selectedJob.job_type)}
-                    </span>
-                  </p>
-                  <p>
-                    <span className='font-medium'>Social:</span>{' '}
-                    <span className='inline-flex items-center gap-1.5'>
-                      <FontAwesomeIcon icon={socialIcon(selectedJob.social)} className='size-3.5' />
-                      {formatSocial(selectedJob.social)}
-                    </span>
-                  </p>
-                  <p>
-                    <span className='font-medium'>Auth:</span>{' '}
-                    {selectedJob.auth_id ? (authNameById.get(selectedJob.auth_id) ?? selectedJob.auth_id) : '-'}
-                  </p>
-                  <p>
-                    <span className='font-medium'>Source search job:</span>{' '}
-                    {selectedJob.source_job_id ? (sourceSearchNameById.get(selectedJob.source_job_id) ?? selectedJob.source_job_id) : '-'}
-                  </p>
-                  <p><span className='font-medium'>Topic:</span> {selectedJob.job_type === 'reply' ? 'N/A' : (selectedJob.topic ?? '-')}</p>
-                  <p><span className='font-medium'>Active:</span> {selectedJob.active ? 'Yes' : 'No'}</p>
-                  <p><span className='font-medium'>Current status:</span> {formatStatusLabel(selectedJob.runtime?.status)}</p>
-                  <p><span className='font-medium'>Last run status:</span> {formatStatusLabel(selectedJob.last_run_status ?? 'never')}</p>
-                  <p><span className='font-medium'>Successful runs:</span> {selectedJob.successful_runs ?? 0}</p>
-                  <p><span className='font-medium'>Threads found:</span> {selectedJob.threads_found_total ?? 0}</p>
-                  <p><span className='font-medium'>Threads replied:</span> {selectedJob.threads_replied_total ?? 0}</p>
-                  <p><span className='font-medium'>Time filter:</span> {selectedJob.job_type === 'search' ? selectedJob.time_filter : 'N/A'}</p>
-                  <p><span className='font-medium'>Subreddit limit:</span> {selectedJob.job_type === 'search' ? selectedJob.subreddit_limit : 'N/A'}</p>
-                  <p><span className='font-medium'>Threads limit:</span> {selectedJob.job_type === 'search' ? selectedJob.threads_limit : 'N/A'}</p>
-                  {selectedJob.job_type === 'reply' ? (
-                    <p><span className='font-medium'>Replies per iteration:</span> {selectedJob.replies_per_iteration}</p>
-                  ) : null}
-                  <p><span className='font-medium'>Minimum similarity score:</span> {selectedJob.job_type === 'reply' ? selectedJob.min_similarity_score : '-'}</p>
-                  <p><span className='font-medium'>Run frequency:</span> {formatRunFrequency(selectedJob.max_runtime_minutes)}</p>
-                  <p><span className='font-medium'>Personas:</span> {(selectedJob.personas ?? []).length > 0 ? selectedJob.personas?.join(', ') : '-'}</p>
-                </div>
-              ) : null}
-              <div className='space-y-2'>
-                <Label>Runtime logs</Label>
-                <div className='max-h-56 overflow-y-auto rounded-md border bg-muted/20 p-3'>
-                  {selectedLogs.length > 0 ? (
-                    <div className='space-y-2'>
-                      {selectedLogs.map((entry, index) => (
-                        <p key={`${entry.at}-${index}`} className='font-mono text-xs leading-5 text-muted-foreground'>
-                          [{formatWhen(entry.at)}] {entry.message}
+            <Tabs
+              value={sheetTab}
+              onValueChange={(value) => setSheetTab(value as 'overview' | 'activity')}
+              className='flex-1 overflow-hidden px-4 py-4'
+            >
+              <TabsList className='w-full justify-start'>
+                <TabsTrigger value='overview'>Overview</TabsTrigger>
+                <TabsTrigger value='activity'>Activity</TabsTrigger>
+              </TabsList>
+
+              <TabsContent value='overview' className='min-h-0 overflow-y-auto pb-4'>
+                {selectedJob ? (
+                  <div className='space-y-4 text-sm'>
+                    <section className='rounded-lg border bg-muted/20 p-3'>
+                      <h3 className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>
+                        Overview
+                      </h3>
+                      <div className='mt-2 grid gap-2'>
+                        <p><span className='font-medium'>Name:</span> {selectedJob.name}</p>
+                        <p><span className='font-medium'>ID:</span> <span className='font-mono'>{selectedJob.id}</span></p>
+                      </div>
+                    </section>
+
+                    <section className='rounded-lg border bg-muted/20 p-3'>
+                      <h3 className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>
+                        State
+                      </h3>
+                      <div className='mt-2 grid gap-2'>
+                        <p><span className='font-medium'>Active:</span> {selectedJob.active ? 'Yes' : 'No'}</p>
+                        <p><span className='font-medium'>Current status:</span> {formatStatusLabel(selectedJob.runtime?.status)}</p>
+                        <p><span className='font-medium'>Last run status:</span> {formatStatusLabel(selectedJob.last_run_status ?? 'never')}</p>
+                      </div>
+                    </section>
+
+                    <section className='rounded-lg border bg-muted/20 p-3'>
+                      <h3 className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>
+                        Metrics
+                      </h3>
+                      <div className='mt-2 grid gap-2'>
+                        <p><span className='font-medium'>Successful runs:</span> {selectedJob.successful_runs ?? 0}</p>
+                        <p><span className='font-medium'>Threads found:</span> {selectedJob.threads_found_total ?? 0}</p>
+                        <p><span className='font-medium'>Threads replied:</span> {selectedJob.threads_replied_total ?? 0}</p>
+                      </div>
+                    </section>
+
+                    <section className='rounded-lg border bg-muted/20 p-3'>
+                      <h3 className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>
+                        Scheduling
+                      </h3>
+                      <div className='mt-2 grid gap-2'>
+                        <p><span className='font-medium'>Run frequency:</span> {formatRunFrequency(selectedJob.max_runtime_minutes)}</p>
+                      </div>
+                    </section>
+
+                    <section className='rounded-lg border bg-muted/20 p-3'>
+                      <h3 className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>
+                        Context
+                      </h3>
+                      <div className='mt-2 grid gap-2'>
+                        <p>
+                          <span className='font-medium'>Auth:</span>{' '}
+                          {selectedJob.auth_id ? (authNameById.get(selectedJob.auth_id) ?? selectedJob.auth_id) : '-'}
                         </p>
-                      ))}
+                        <p>
+                          <span className='font-medium'>Source search job:</span>{' '}
+                          {selectedJob.source_job_id ? (sourceSearchNameById.get(selectedJob.source_job_id) ?? selectedJob.source_job_id) : '-'}
+                        </p>
+                        <p><span className='font-medium'>Topic:</span> {selectedJob.job_type === 'reply' ? 'N/A' : (selectedJob.topic ?? '-')}</p>
+                        <p>
+                          <span className='font-medium'>Search query:</span>{' '}
+                          {selectedJob.search_query_id
+                            ? selectedJob.search_query_id
+                            : '-'}
+                        </p>
+                      </div>
+                    </section>
+
+                    <section className='rounded-lg border bg-muted/20 p-3'>
+                      <h3 className='text-xs font-semibold uppercase tracking-wide text-muted-foreground'>
+                        {selectedJob.job_type === 'search' ? 'Search configuration' : 'Reply configuration'}
+                      </h3>
+                      <div className='mt-2 grid gap-2'>
+                        {selectedJob.job_type === 'search' && selectedJob.social === 'reddit' ? (
+                          <>
+                            <p><span className='font-medium'>Time filter:</span> {selectedJob.time_filter}</p>
+                            <p><span className='font-medium'>Subreddit limit:</span> {selectedJob.subreddit_limit}</p>
+                            <p><span className='font-medium'>Locked subreddits:</span> {(selectedJob.search_plan?.subreddits ?? []).join(', ') || '-'}</p>
+                            <p><span className='font-medium'>Locked queries:</span> {(selectedJob.search_plan?.queries ?? []).join(' | ') || '-'}</p>
+                          </>
+                        ) : null}
+                        {selectedJob.job_type === 'search' && selectedJob.social === 'linkedin' ? (
+                          <>
+                            <p><span className='font-medium'>Time filter:</span> {selectedJob.time_filter}</p>
+                            <p><span className='font-medium'>Sort by:</span> {selectedJob.sort_by}</p>
+                            <p><span className='font-medium'>Selector wait (s):</span> {selectedJob.selector_wait_timeout_seconds}</p>
+                            <p><span className='font-medium'>Detail wait (s):</span> {selectedJob.detail_wait_timeout_seconds}</p>
+                            <p><span className='font-medium'>Expand comments clicks:</span> {selectedJob.max_comment_expand_clicks}</p>
+                            <p><span className='font-medium'>Detail enrich posts:</span> {selectedJob.detail_enrich_top_k}</p>
+                            <p><span className='font-medium'>Locked query:</span> {selectedJob.search_plan?.query || '-'}</p>
+                          </>
+                        ) : null}
+                        <p>
+                          <span className='font-medium'>{selectedJob.social === 'linkedin' ? 'Posts limit' : 'Threads limit'}:</span>{' '}
+                          {selectedJob.job_type === 'search' ? selectedJob.threads_limit : 'N/A'}
+                        </p>
+                        <p>
+                          <span className='font-medium'>Scroll rounds:</span>{' '}
+                          {selectedJob.job_type === 'search' && selectedJob.social === 'linkedin' ? selectedJob.scroll_rounds : 'N/A'}
+                        </p>
+                        {selectedJob.job_type === 'reply' ? (
+                          <p><span className='font-medium'>Replies per iteration:</span> {selectedJob.replies_per_iteration}</p>
+                        ) : null}
+                      </div>
+                    </section>
+                  </div>
+                ) : null}
+              </TabsContent>
+
+              <TabsContent value='activity' className='min-h-0 overflow-y-auto pb-4'>
+                <div className='space-y-2'>
+                  <div className='flex items-center justify-between gap-2'>
+                    <Label>Run timeline</Label>
+                    <div className='inline-flex items-center gap-1 rounded-md border bg-background p-1'>
+                      <Button
+                        size='sm'
+                        variant={jobActivityFilter === 'all' ? 'default' : 'ghost'}
+                        className='h-7 px-2 text-xs'
+                        onClick={() => setJobActivityFilter('all')}
+                      >
+                        All
+                      </Button>
+                      <Button
+                        size='sm'
+                        variant={jobActivityFilter === 'errors' ? 'default' : 'ghost'}
+                        className='h-7 px-2 text-xs'
+                        onClick={() => setJobActivityFilter('errors')}
+                      >
+                        Show errors only
+                      </Button>
+                      <Button
+                        size='sm'
+                        variant={jobActivityFilter === 'warnings' ? 'default' : 'ghost'}
+                        className='h-7 px-2 text-xs'
+                        onClick={() => setJobActivityFilter('warnings')}
+                      >
+                        Show warnings only
+                      </Button>
                     </div>
-                  ) : (
-                    <p className='text-sm text-muted-foreground'>No runtime logs yet.</p>
-                  )}
+                  </div>
+                  <div className='max-h-[70vh] overflow-y-auto rounded-lg border bg-muted/20 p-3'>
+                    {filteredSelectedLogs.length > 0 ? (
+                      <div className='space-y-2'>
+                        {filteredSelectedLogs.map((entry, index) => (
+                          <p key={`${entry.at}-${index}`} className='font-mono text-xs leading-5 text-muted-foreground'>
+                            [{formatWhen(entry.at)}] {entry.message}
+                          </p>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className='text-sm text-muted-foreground'>No timeline entries for this filter.</p>
+                    )}
+                  </div>
                 </div>
-              </div>
-            </div>
+              </TabsContent>
+            </Tabs>
           </div>
         </SheetContent>
       </Sheet>
