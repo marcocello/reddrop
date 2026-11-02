@@ -65,3 +65,6 @@ logs/
 **/TMP
 **/_archive
 .reddrop
+
+# Keep private conversations and local metadata out of public commits.
+docs/interactions/
