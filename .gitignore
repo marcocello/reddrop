@@ -68,3 +68,13 @@ logs/
 
 # Keep private conversations and local metadata out of public commits.
 docs/interactions/
+
+# Keep personal deliverables and runtime evidence outside public commits.
+/docs/artifacts/
+/docs/interactions/
+/.private/
+/private-data/
+/privacy-backups/
+/data/private/
+/data/results/
+/reddrop.mp4
